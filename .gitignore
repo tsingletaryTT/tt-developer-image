@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+.venv/
+venv/
+*.pyc
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker build artifacts
+*.tar
+*.tar.gz
+
+# Secrets / credentials
+.env
+.env.*
+*.pem
+*.key
+
+# Logs
+*.log
