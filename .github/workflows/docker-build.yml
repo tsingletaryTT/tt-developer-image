@@ -1,34 +1,41 @@
 # .github/workflows/docker-build.yml
 #
-# Builds (and optionally publishes) the Tenstorrent N150 developer image.
+# Builds, smoke-tests on real N150 hardware, and publishes the Tenstorrent
+# developer image.
 #
-# IMPORTANT — runner sizing:
-#   The full tt-metal source build is extremely resource-intensive:
-#     - ~30–60+ min compile time
-#     - 20–40 GB disk for source + build artifacts
-#     - 8+ GB RAM recommended
-#   GitHub-hosted `ubuntu-latest` runners (14 GB disk, 7 GB RAM, 2 vCPU)
-#   will almost certainly run out of disk or time out.
+# Runner requirement:
+#   This workflow MUST run on a self-hosted runner that:
+#     - Is the physical N150 host (or has /dev/tenstorrent mapped into it)
+#     - Has Docker installed and the runner user in the `docker` group
+#     - Has 100+ GB free disk and 16+ GB RAM for the tt-metal source build
+#     - Is registered with the label  tt-n150  (see setup instructions below)
 #
-#   Recommended path:
-#     - Register a self-hosted runner on a beefy Linux box (ideally with
-#       the N150 physically present so you can smoke-test the image too).
-#     - See: https://docs.github.com/en/actions/hosting-your-own-runners
+# How to register the runner — run these ON the N150 host:
 #
-#   Until then, `runs-on` is set to `ubuntu-latest` so the workflow is
-#   syntactically valid and you can test the non-build steps.  Swap the
-#   label to `self-hosted` (or a custom label like `tt-builder`) when
-#   your runner is registered.
+#   1. Go to: https://github.com/tsingletaryTT/tt-developer-image/settings/actions/runners/new
+#   2. Select: Linux / x64
+#   3. Follow the download + configure steps shown on that page, but when
+#      prompted for labels add:  tt-n150
+#        ./config.sh --url https://github.com/tsingletaryTT/tt-developer-image \
+#                    --token <TOKEN> \
+#                    --labels tt-n150
+#   4. Install and start as a systemd service so it survives reboots:
+#        sudo ./svc.sh install
+#        sudo ./svc.sh start
+#   5. Give the runner Docker access (if not already):
+#        sudo usermod -aG docker $USER   # or whichever user runs the service
+#        # then restart the svc or re-login
 #
 # Registry:
-#   Pushes to GitHub Container Registry (GHCR).  No extra secrets needed;
-#   the built-in GITHUB_TOKEN is used.  Images land at:
-#     ghcr.io/tsingletarytttt/tt-developer-image:<tag>
+#   Images are published to GHCR using the built-in GITHUB_TOKEN — no extra
+#   secrets needed.
+#     ghcr.io/tsingletarytttt/tt-developer-image:latest
+#     ghcr.io/tsingletarytttt/tt-developer-image:sha-<short-sha>
 #
 # Triggers:
-#   - push to main  →  build + push image  (tagged `latest` + `sha-<sha>`)
-#   - pull_request  →  build only  (no push, validates Dockerfile compiles)
-#   - workflow_dispatch  →  manual trigger, push image
+#   push to main (docker/** changes) → build + smoke test + push to GHCR
+#   pull_request to main             → build + smoke test (no push)
+#   workflow_dispatch                → manual: build + smoke test + push
 
 name: Build & Publish Docker Image
 
@@ -37,8 +44,6 @@ on:
     branches:
       - main
     paths:
-      # Only rebuild when something in docker/ or this workflow file changes.
-      # Remove these filters if you want every push to trigger a rebuild.
       - "docker/**"
       - ".github/workflows/docker-build.yml"
 
@@ -49,45 +54,38 @@ on:
       - "docker/**"
       - ".github/workflows/docker-build.yml"
 
-  # Allow a manual kick from the Actions UI or `gh workflow run`.
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
-  # github.repository is "tsingletaryTT/tt-developer-image"; GHCR lowercases it.
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build:
-    name: Build Docker image
-    # -----------------------------------------------------------------
-    # SWAP THIS to `self-hosted` (or a custom label) once you have a
-    # runner with enough disk/RAM for the tt-metal source build.
-    # -----------------------------------------------------------------
-    runs-on: ubuntu-latest
+    name: Build, smoke-test & publish
+    # Runs on the N150 host so we can pass /dev/tenstorrent into the
+    # test container and verify the image works against real hardware.
+    runs-on: [self-hosted, tt-n150]
 
     permissions:
       contents: read
-      # Required to push to GHCR using GITHUB_TOKEN.
-      packages: write
+      packages: write   # required to push to GHCR via GITHUB_TOKEN
 
     steps:
       # ----------------------------------------------------------------
-      # 1. Source checkout
+      # 1. Checkout
       # ----------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
       # ----------------------------------------------------------------
-      # 2. Docker Buildx — needed for advanced caching and multi-platform
-      #    support (if you ever want an arm64 variant).
+      # 2. Docker Buildx
       # ----------------------------------------------------------------
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       # ----------------------------------------------------------------
-      # 3. Authenticate to GHCR — skipped on PRs to avoid leaking the
-      #    token to untrusted forks.
+      # 3. Log in to GHCR (skipped on PRs from forks)
       # ----------------------------------------------------------------
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
@@ -98,13 +96,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # ----------------------------------------------------------------
-      # 4. Compute image tags + OCI labels
-      #
-      #    Tags applied:
-      #      latest          — main branch pushes only
+      # 4. Compute tags + OCI labels
+      #      latest          — main branch only
       #      main            — branch name
-      #      sha-<short-sha> — every build for traceability
-      #      pr-<number>     — pull request builds
+      #      sha-<short>     — every build
+      #      pr-<n>          — pull requests
       # ----------------------------------------------------------------
       - name: Extract Docker metadata
         id: meta
@@ -118,33 +114,103 @@ jobs:
             type=sha,prefix=sha-,format=short
 
       # ----------------------------------------------------------------
-      # 5. Build (and push on non-PR events)
+      # 5. Build and load image into the local Docker daemon.
+      #    We use load:true / push:false here so the image is immediately
+      #    available for the smoke-test steps below.  We push explicitly
+      #    in step 7 after the tests pass.
       #
-      #    Build context is docker/ because the Dockerfile does:
-      #      COPY scripts/build_tt_metal.sh ...
-      #      COPY scripts/setup_envs.sh ...
-      #    which resolve relative to the build context directory.
+      #    Build context is docker/ — the Dockerfile COPYs scripts from
+      #    there (scripts/build_tt_metal.sh, scripts/setup_envs.sh).
       #
-      #    Layer caching via GitHub Actions cache keeps repeat builds fast.
-      #    On a self-hosted runner you can also use `type=registry` caching
-      #    against GHCR for a persistent cross-runner cache.
+      #    GHA layer cache dramatically speeds up re-builds when only
+      #    late-stage layers change (e.g. version bumps in setup_envs.sh).
       # ----------------------------------------------------------------
-      - name: Build and push Docker image
+      - name: Build image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: docker/
           file: docker/Dockerfile
-          # Push on main-branch pushes and manual dispatches; build-only on PRs.
-          push: ${{ github.event_name != 'pull_request' }}
+          load: true    # loads into local daemon — required for smoke tests
+          push: false   # we push after tests pass (see step 7)
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # GitHub Actions cache — speeds up layer rebuilds significantly.
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       # ----------------------------------------------------------------
-      # 6. Print the published image digest for easy reference in logs.
+      # 6. Smoke tests — run against the freshly built local image.
+      #
+      #    ${{ steps.build.outputs.imageid }} is the sha256 image ID, so
+      #    these always reference exactly the image we just built regardless
+      #    of tag aliasing.
+      #
+      #    Tests 6a–6c each source one env and verify the key package
+      #    imports without errors.  Test 6a also passes the N150 device
+      #    because TTNN may probe hardware during initialisation.
       # ----------------------------------------------------------------
-      - name: Image digest
+
+      - name: Smoke test 6a — N150 device visible + TTNN import
+        # Passes /dev/tenstorrent so the container can see the card.
+        # If your host uses hugepages add:
+        #   -v /dev/hugepages-1G:/dev/hugepages-1G
+        run: |
+          docker run --rm \
+            --device /dev/tenstorrent \
+            ${{ steps.build.outputs.imageid }} \
+            bash -c "
+              set -e
+              echo '--- device check ---'
+              ls -la /dev/tenstorrent
+              echo '--- TTNN import ---'
+              source /etc/profile.d/tt-env-metal.sh
+              python -c \"import ttnn; print('TTNN OK, version:', ttnn.__version__)\"
+            "
+
+      - name: Smoke test 6b — vLLM + torch import
+        run: |
+          docker run --rm \
+            ${{ steps.build.outputs.imageid }} \
+            bash -c "
+              set -e
+              source /etc/profile.d/tt-env-vllm.sh
+              python -c \"
+          import torch, vllm
+          print('torch:', torch.__version__)
+          print('vLLM: ', vllm.__version__ if hasattr(vllm,'__version__') else 'ok')
+              \"
+            "
+
+      - name: Smoke test 6c — TT-Forge-ONNX import
+        run: |
+          docker run --rm \
+            ${{ steps.build.outputs.imageid }} \
+            bash -c "
+              set -e
+              source /etc/profile.d/tt-env-forge.sh
+              python -c \"import tt_forge_onnx; print('TT-Forge-ONNX OK:', tt_forge_onnx.__name__)\"
+            "
+
+      # ----------------------------------------------------------------
+      # 7. Push to GHCR — only after all smoke tests pass, and only on
+      #    non-PR events (push to main or manual dispatch).
+      #
+      #    We push each computed tag explicitly since we used load:true
+      #    (not push:true) in the build step above.
+      # ----------------------------------------------------------------
+      - name: Push image to GHCR
         if: github.event_name != 'pull_request'
-        run: echo "Published ${{ steps.meta.outputs.tags }}"
+        run: |
+          echo "${{ steps.meta.outputs.tags }}" | while IFS= read -r tag; do
+            echo "Pushing $tag"
+            docker push "$tag"
+          done
+
+      # ----------------------------------------------------------------
+      # 8. Clean up — remove the locally loaded image so the runner disk
+      #    doesn't fill up across builds.  Uses the image ID so it removes
+      #    even if all tags were already pushed/retagged.
+      # ----------------------------------------------------------------
+      - name: Clean up local image
+        if: always()
+        run: docker rmi ${{ steps.build.outputs.imageid }} || true
