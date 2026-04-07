@@ -1,0 +1,150 @@
+# .github/workflows/docker-build.yml
+#
+# Builds (and optionally publishes) the Tenstorrent N150 developer image.
+#
+# IMPORTANT — runner sizing:
+#   The full tt-metal source build is extremely resource-intensive:
+#     - ~30–60+ min compile time
+#     - 20–40 GB disk for source + build artifacts
+#     - 8+ GB RAM recommended
+#   GitHub-hosted `ubuntu-latest` runners (14 GB disk, 7 GB RAM, 2 vCPU)
+#   will almost certainly run out of disk or time out.
+#
+#   Recommended path:
+#     - Register a self-hosted runner on a beefy Linux box (ideally with
+#       the N150 physically present so you can smoke-test the image too).
+#     - See: https://docs.github.com/en/actions/hosting-your-own-runners
+#
+#   Until then, `runs-on` is set to `ubuntu-latest` so the workflow is
+#   syntactically valid and you can test the non-build steps.  Swap the
+#   label to `self-hosted` (or a custom label like `tt-builder`) when
+#   your runner is registered.
+#
+# Registry:
+#   Pushes to GitHub Container Registry (GHCR).  No extra secrets needed;
+#   the built-in GITHUB_TOKEN is used.  Images land at:
+#     ghcr.io/tsingletarytttt/tt-developer-image:<tag>
+#
+# Triggers:
+#   - push to main  →  build + push image  (tagged `latest` + `sha-<sha>`)
+#   - pull_request  →  build only  (no push, validates Dockerfile compiles)
+#   - workflow_dispatch  →  manual trigger, push image
+
+name: Build & Publish Docker Image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      # Only rebuild when something in docker/ or this workflow file changes.
+      # Remove these filters if you want every push to trigger a rebuild.
+      - "docker/**"
+      - ".github/workflows/docker-build.yml"
+
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "docker/**"
+      - ".github/workflows/docker-build.yml"
+
+  # Allow a manual kick from the Actions UI or `gh workflow run`.
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  # github.repository is "tsingletaryTT/tt-developer-image"; GHCR lowercases it.
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    name: Build Docker image
+    # -----------------------------------------------------------------
+    # SWAP THIS to `self-hosted` (or a custom label) once you have a
+    # runner with enough disk/RAM for the tt-metal source build.
+    # -----------------------------------------------------------------
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      # Required to push to GHCR using GITHUB_TOKEN.
+      packages: write
+
+    steps:
+      # ----------------------------------------------------------------
+      # 1. Source checkout
+      # ----------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ----------------------------------------------------------------
+      # 2. Docker Buildx — needed for advanced caching and multi-platform
+      #    support (if you ever want an arm64 variant).
+      # ----------------------------------------------------------------
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ----------------------------------------------------------------
+      # 3. Authenticate to GHCR — skipped on PRs to avoid leaking the
+      #    token to untrusted forks.
+      # ----------------------------------------------------------------
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ----------------------------------------------------------------
+      # 4. Compute image tags + OCI labels
+      #
+      #    Tags applied:
+      #      latest          — main branch pushes only
+      #      main            — branch name
+      #      sha-<short-sha> — every build for traceability
+      #      pr-<number>     — pull request builds
+      # ----------------------------------------------------------------
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-,format=short
+
+      # ----------------------------------------------------------------
+      # 5. Build (and push on non-PR events)
+      #
+      #    Build context is docker/ because the Dockerfile does:
+      #      COPY scripts/build_tt_metal.sh ...
+      #      COPY scripts/setup_envs.sh ...
+      #    which resolve relative to the build context directory.
+      #
+      #    Layer caching via GitHub Actions cache keeps repeat builds fast.
+      #    On a self-hosted runner you can also use `type=registry` caching
+      #    against GHCR for a persistent cross-runner cache.
+      # ----------------------------------------------------------------
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/
+          file: docker/Dockerfile
+          # Push on main-branch pushes and manual dispatches; build-only on PRs.
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # GitHub Actions cache — speeds up layer rebuilds significantly.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ----------------------------------------------------------------
+      # 6. Print the published image digest for easy reference in logs.
+      # ----------------------------------------------------------------
+      - name: Image digest
+        if: github.event_name != 'pull_request'
+        run: echo "Published ${{ steps.meta.outputs.tags }}"
