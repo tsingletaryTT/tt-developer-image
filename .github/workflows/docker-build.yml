@@ -1,41 +1,33 @@
 # .github/workflows/docker-build.yml
 #
-# Builds, smoke-tests on real N150 hardware, and publishes the Tenstorrent
-# developer image.
+# Builds and publishes the Tenstorrent N150 developer image in "checkout" mode
+# — tt-metal is cloned but not compiled.  This keeps the image buildable on
+# standard GitHub-hosted runners (no huge disk / long compile required).
 #
-# Runner requirement:
-#   This workflow MUST run on a self-hosted runner that:
-#     - Is the physical N150 host (or has /dev/tenstorrent mapped into it)
-#     - Has Docker installed and the runner user in the `docker` group
-#     - Has 100+ GB free disk and 16+ GB RAM for the tt-metal source build
-#     - Is registered with the label  tt-n150  (see setup instructions below)
+# Build modes (TT_METAL_BUILD arg):
 #
-# How to register the runner — run these ON the N150 host:
+#   checkout  (this workflow, DEFAULT)
+#     - Runs on: ubuntu-latest (GitHub-hosted, free)
+#     - What you get: all tooling + source trees present; tt-metal/vLLM not
+#       compiled.  Good for iterating on Dockerfile layers, testing Forge,
+#       shipping a "ready to build" dev container.
 #
-#   1. Go to: https://github.com/tsingletaryTT/tt-developer-image/settings/actions/runners/new
-#   2. Select: Linux / x64
-#   3. Follow the download + configure steps shown on that page, but when
-#      prompted for labels add:  tt-n150
-#        ./config.sh --url https://github.com/tsingletaryTT/tt-developer-image \
-#                    --token <TOKEN> \
-#                    --labels tt-n150
-#   4. Install and start as a systemd service so it survives reboots:
-#        sudo ./svc.sh install
-#        sudo ./svc.sh start
-#   5. Give the runner Docker access (if not already):
-#        sudo usermod -aG docker $USER   # or whichever user runs the service
-#        # then restart the svc or re-login
+#   full  (manual / self-hosted)
+#     - Requires a self-hosted runner on the N150 host with 100+ GB disk.
+#     - Trigger manually via workflow_dispatch once a runner is registered,
+#       or wire up a second workflow that passes --build-arg TT_METAL_BUILD=full.
+#     - See the runner registration instructions that were removed from this file
+#       when checkout mode became the default.  They live in git history.
 #
 # Registry:
-#   Images are published to GHCR using the built-in GITHUB_TOKEN — no extra
-#   secrets needed.
-#     ghcr.io/tsingletarytttt/tt-developer-image:latest
-#     ghcr.io/tsingletarytttt/tt-developer-image:sha-<short-sha>
+#   ghcr.io/tsingletarytttt/tt-developer-image
+#   Tags: latest (main), sha-<short> (every build), pr-<n> (PRs)
+#   Auth: built-in GITHUB_TOKEN — no extra secrets needed.
 #
 # Triggers:
-#   push to main (docker/** changes) → build + smoke test + push to GHCR
-#   pull_request to main             → build + smoke test (no push)
-#   workflow_dispatch                → manual: build + smoke test + push
+#   push to main (docker/** changes) → build + 3 smoke tests + push to GHCR
+#   pull_request to main             → build + 3 smoke tests, no push
+#   workflow_dispatch                → manual build + push
 
 name: Build & Publish Docker Image
 
@@ -62,10 +54,8 @@ env:
 
 jobs:
   build:
-    name: Build, smoke-test & publish
-    # Runs on the N150 host so we can pass /dev/tenstorrent into the
-    # test container and verify the image works against real hardware.
-    runs-on: [self-hosted, tt-n150]
+    name: Build (checkout mode), smoke-test & publish
+    runs-on: ubuntu-latest
 
     permissions:
       contents: read
@@ -114,16 +104,14 @@ jobs:
             type=sha,prefix=sha-,format=short
 
       # ----------------------------------------------------------------
-      # 5. Build and load image into the local Docker daemon.
-      #    We use load:true / push:false here so the image is immediately
-      #    available for the smoke-test steps below.  We push explicitly
-      #    in step 7 after the tests pass.
+      # 5. Build and load into the local Docker daemon.
       #
-      #    Build context is docker/ — the Dockerfile COPYs scripts from
-      #    there (scripts/build_tt_metal.sh, scripts/setup_envs.sh).
+      #    TT_METAL_BUILD=checkout  — clone only, no compilation.
+      #    This is what makes the image buildable on hosted runners.
       #
-      #    GHA layer cache dramatically speeds up re-builds when only
-      #    late-stage layers change (e.g. version bumps in setup_envs.sh).
+      #    Build context is docker/ (Dockerfile COPYs scripts/ from there).
+      #    GHA layer cache speeds up repeat builds when only late-stage
+      #    layers change (e.g. Forge version bump, workflow tweaks).
       # ----------------------------------------------------------------
       - name: Build image
         id: build
@@ -131,57 +119,52 @@ jobs:
         with:
           context: docker/
           file: docker/Dockerfile
-          load: true    # loads into local daemon — required for smoke tests
-          push: false   # we push after tests pass (see step 7)
+          build-args: |
+            TT_METAL_BUILD=checkout
+          load: true    # loads into local daemon for smoke tests below
+          push: false   # pushed explicitly in step 7 after tests pass
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       # ----------------------------------------------------------------
-      # 6. Smoke tests — run against the freshly built local image.
+      # 6. Smoke tests appropriate for checkout mode.
       #
-      #    ${{ steps.build.outputs.imageid }} is the sha256 image ID, so
-      #    these always reference exactly the image we just built regardless
-      #    of tag aliasing.
-      #
-      #    Tests 6a–6c each source one env and verify the key package
-      #    imports without errors.  Test 6a also passes the N150 device
-      #    because TTNN may probe hardware during initialisation.
+      #    We can't test TTNN dispatch (no compiled bindings) or vLLM
+      #    (not installed) in this mode.  Instead we verify:
+      #      6a — tt-metal source tree is present at the pinned commit
+      #      6b — tt-vllm source tree was cloned successfully
+      #      6c — TT-Forge-ONNX imports (Forge is always pip-installed)
       # ----------------------------------------------------------------
 
-      - name: Smoke test 6a — N150 device visible + TTNN import
-        # Passes /dev/tenstorrent so the container can see the card.
-        # If your host uses hugepages add:
-        #   -v /dev/hugepages-1G:/dev/hugepages-1G
-        run: |
-          docker run --rm \
-            --device /dev/tenstorrent \
-            ${{ steps.build.outputs.imageid }} \
-            bash -c "
-              set -e
-              echo '--- device check ---'
-              ls -la /dev/tenstorrent
-              echo '--- TTNN import ---'
-              source /etc/profile.d/tt-env-metal.sh
-              python -c \"import ttnn; print('TTNN OK, version:', ttnn.__version__)\"
-            "
-
-      - name: Smoke test 6b — vLLM + torch import
+      - name: "Smoke test 6a — tt-metal source tree at pinned commit"
         run: |
           docker run --rm \
             ${{ steps.build.outputs.imageid }} \
             bash -c "
               set -e
-              source /etc/profile.d/tt-env-vllm.sh
-              python -c \"
-          import torch, vllm
-          print('torch:', torch.__version__)
-          print('vLLM: ', vllm.__version__ if hasattr(vllm,'__version__') else 'ok')
-              \"
+              echo '--- TT_METAL_HOME ---'
+              echo \$TT_METAL_HOME
+              test -d \"\$TT_METAL_HOME\" || (echo 'ERROR: tt-metal dir missing' && exit 1)
+              echo '--- HEAD commit ---'
+              git -C \"\$TT_METAL_HOME\" log -1 --format='%H  %s'
+              echo 'tt-metal checkout OK'
             "
 
-      - name: Smoke test 6c — TT-Forge-ONNX import
+      - name: "Smoke test 6b — tt-vllm source tree present"
+        run: |
+          docker run --rm \
+            ${{ steps.build.outputs.imageid }} \
+            bash -c "
+              set -e
+              test -d \"\$HOME/tt-vllm\" || (echo 'ERROR: tt-vllm dir missing' && exit 1)
+              echo '--- tt-vllm HEAD ---'
+              git -C \"\$HOME/tt-vllm\" log -1 --format='%H  %s'
+              echo 'tt-vllm checkout OK'
+            "
+
+      - name: "Smoke test 6c — TT-Forge-ONNX import"
         run: |
           docker run --rm \
             ${{ steps.build.outputs.imageid }} \
@@ -192,11 +175,8 @@ jobs:
             "
 
       # ----------------------------------------------------------------
-      # 7. Push to GHCR — only after all smoke tests pass, and only on
-      #    non-PR events (push to main or manual dispatch).
-      #
-      #    We push each computed tag explicitly since we used load:true
-      #    (not push:true) in the build step above.
+      # 7. Push to GHCR after all smoke tests pass.
+      #    Skipped on PRs — build-only validation is enough there.
       # ----------------------------------------------------------------
       - name: Push image to GHCR
         if: github.event_name != 'pull_request'
@@ -207,9 +187,7 @@ jobs:
           done
 
       # ----------------------------------------------------------------
-      # 8. Clean up — remove the locally loaded image so the runner disk
-      #    doesn't fill up across builds.  Uses the image ID so it removes
-      #    even if all tags were already pushed/retagged.
+      # 8. Remove the locally loaded image to keep runner disk clean.
       # ----------------------------------------------------------------
       - name: Clean up local image
         if: always()

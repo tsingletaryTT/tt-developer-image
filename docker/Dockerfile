@@ -2,8 +2,28 @@
 #
 # Goals:
 # - Future-proof OS (24.04) with a pinned, battle-tested TT stack.
-# - Full source builds of tt-metal, plus vLLM + Forge/XLA stacks.
+# - Flexible tt-metal handling: fast checkout-only builds for CI/iteration,
+#   full source compilation for production images that run on real hardware.
 # - Heavy comments so DX teams can tweak confidently.
+#
+# tt-metal build modes (TT_METAL_BUILD build arg):
+#
+#   checkout  (DEFAULT)
+#     git clone only — no compilation.  Suitable for CI, iterating on venv
+#     layers, or shipping a source-present image where you'll build at runtime.
+#     Build time: minutes.
+#       docker build -t tenstorrent/dev-n150:checkout .
+#
+#   full
+#     clone + install_dependencies.sh + complete C++ build + pip install.
+#     Required to actually dispatch ops to the N150.  Suitable for production
+#     images.  Build time: 30–90 min.
+#       docker build --build-arg TT_METAL_BUILD=full -t tenstorrent/dev-n150:latest .
+#
+# Note: vLLM pip install (setup_envs.sh vllm) is skipped in checkout mode
+# because the Tenstorrent vLLM fork depends on compiled tt-metal Python
+# bindings.  In checkout mode a note is printed; run /tmp/setup_envs.sh vllm
+# inside the container after you've built tt-metal.
 
 FROM ubuntu:24.04
 
@@ -99,7 +119,7 @@ RUN /opt/venv-metal/bin/pip install --upgrade pip && \
     /opt/venv-forge/bin/pip install --upgrade pip
 
 # ---------------------------------------------------------------------------
-# 5. Clone tt-metal at pinned commit and build from source
+# 5. Clone tt-metal at pinned commit; optionally build from source
 # ---------------------------------------------------------------------------
 
 # Pin to the tt-metal commit that matches a known-good vLLM stack (e.g. 555f240…).
@@ -107,6 +127,16 @@ RUN /opt/venv-metal/bin/pip install --upgrade pip && \
 ARG TT_METAL_REPO=https://github.com/tenstorrent/tt-metal.git
 ARG TT_METAL_COMMIT=555f240b7dbfadd6634e958faedb516bfaf6f9c4
 
+# Controls whether we compile tt-metal inside the image.
+# See the file header for a full description of each mode.
+#   checkout  (default) — clone only, no build
+#   full                — clone + install_dependencies.sh + build + pip install
+ARG TT_METAL_BUILD=checkout
+
+# Clone is always performed regardless of TT_METAL_BUILD mode.
+# Having the source tree present lets developers build at runtime if needed
+# and keeps the image useful for browsing / hacking on tt-metal code.
+# --recurse-submodules is required; tt-metal has many third-party submodules.
 RUN git clone --recurse-submodules ${TT_METAL_REPO} /home/${DEV_USER}/tt-metal && \
     cd /home/${DEV_USER}/tt-metal && \
     git checkout ${TT_METAL_COMMIT} && \
@@ -114,20 +144,26 @@ RUN git clone --recurse-submodules ${TT_METAL_REPO} /home/${DEV_USER}/tt-metal &
 
 ENV TT_METAL_HOME=/home/${DEV_USER}/tt-metal
 
-# Install tt-metal system dependencies (equivalent of install_dependencies.sh).
-# NOTE: we run this inside the container for a "fat dev" image –
-# it may overlap with earlier apt installs but keeps parity with docs.
-RUN cd ${TT_METAL_HOME} && \
-    sudo ./install_dependencies.sh || true
+# Install tt-metal system dependencies — only needed when we're about to build.
+# Skipped in checkout mode to keep that path fast.
+RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
+      cd ${TT_METAL_HOME} && sudo ./install_dependencies.sh || true; \
+    else \
+      echo "TT_METAL_BUILD=${TT_METAL_BUILD}: skipping install_dependencies.sh"; \
+    fi
 
-# Build tt-metal with full examples; this can be slow but is what you asked for.
-# We:
-#   - Build the C++ library and firmware
-#   - Create Python venv bindings in /opt/venv-metal
-#   - Install tt-metal into that venv (editable mode)
+# Full C++ build + Python venv install.
+# In checkout mode the script is still copied into the image so developers
+# can trigger it manually inside the running container:
+#   /tmp/build_tt_metal.sh
 COPY scripts/build_tt_metal.sh /tmp/build_tt_metal.sh
 RUN chmod +x /tmp/build_tt_metal.sh && \
-    /tmp/build_tt_metal.sh
+    if [ "${TT_METAL_BUILD}" = "full" ]; then \
+      /tmp/build_tt_metal.sh; \
+    else \
+      echo "TT_METAL_BUILD=${TT_METAL_BUILD}: skipping tt-metal compilation."; \
+      echo "To build later inside the container: /tmp/build_tt_metal.sh"; \
+    fi
 
 # ---------------------------------------------------------------------------
 # 6. vLLM env: Tenstorrent fork, pinned torch 2.5.0+cpu
@@ -147,9 +183,20 @@ RUN git clone ${VLLM_REPO} /home/${DEV_USER}/tt-vllm && \
 # Install vLLM dependencies in /opt/venv-vllm:
 #   - PyTorch 2.5.0+cpu
 #   - other core deps (fairscale, termcolor, loguru, blobfile, fire, pytz, etc.)
+#
+# Skipped in checkout mode: the Tenstorrent vLLM fork's setup.py links against
+# compiled tt-metal Python extensions, so `pip install -e .` will fail without
+# the build artifacts produced by build_tt_metal.sh.
+# To complete the vLLM install after building tt-metal at runtime:
+#   /tmp/setup_envs.sh vllm
 COPY scripts/setup_envs.sh /tmp/setup_envs.sh
 RUN chmod +x /tmp/setup_envs.sh && \
-    /tmp/setup_envs.sh vllm
+    if [ "${TT_METAL_BUILD}" = "full" ]; then \
+      /tmp/setup_envs.sh vllm; \
+    else \
+      echo "TT_METAL_BUILD=${TT_METAL_BUILD}: skipping vLLM pip install."; \
+      echo "Run /tmp/setup_envs.sh vllm after building tt-metal inside the container."; \
+    fi
 
 # ---------------------------------------------------------------------------
 # 7. Forge / TT-Forge-ONNX / TT-XLA env (0.8.0)
