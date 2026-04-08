@@ -82,7 +82,13 @@ ARG DEV_USER=dev
 ARG DEV_UID=1000
 ARG DEV_GID=1000
 
-RUN groupadd -g ${DEV_GID} ${DEV_USER} && \
+# Ubuntu 24.04 base images ship a pre-created 'ubuntu' user at UID/GID 1000.
+# Remove it before creating our own dev user so groupadd -g 1000 doesn't
+# fail with "GID not unique" (exit code 4).  The || true guards against older
+# base images that don't have the ubuntu user.
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    groupdel ubuntu 2>/dev/null || true && \
+    groupadd -g ${DEV_GID} ${DEV_USER} && \
     useradd -m -u ${DEV_UID} -g ${DEV_GID} -s /bin/bash ${DEV_USER} && \
     usermod -aG sudo ${DEV_USER} && \
     echo "${DEV_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-${DEV_USER}
