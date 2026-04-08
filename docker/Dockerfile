@@ -34,17 +34,28 @@ ENV DEBIAN_FRONTEND=noninteractive
 # 1. Base OS + system dependencies
 # ---------------------------------------------------------------------------
 
-# We:
-# - Refresh apt
-# - Install fundamental build tools, Python, Clang, CMake, etc.
-# - Include extra libs required by tt-metal, tt-mlir, tt-forge-onnx, tt-xla, vLLM
+# Ubuntu 24.04 (Noble) only ships Python 3.12 in its default repos.
+# The TT stack (tt-metal, vLLM) requires Python 3.10 / 3.11, so we add the
+# deadsnakes PPA first.  This is a stable, well-known PPA maintained by the
+# Python core team for older CPython builds on Ubuntu.
+# Splitting this into its own RUN layer means the PPA add is cached
+# independently from the package list below — useful when tweaking packages.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+ && add-apt-repository -y ppa:deadsnakes/ppa \
+ && rm -rf /var/lib/apt/lists/*
 
+# Main system dependencies.
+# We:
+# - Install fundamental build tools, Python 3.10 + 3.11, Clang, CMake, etc.
+# - Include extra libs required by tt-metal, tt-mlir, tt-forge-onnx, tt-xla, vLLM
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # Core utilities
     bash ca-certificates curl wget git sudo apt-transport-https gnupg lsb-release \
     # Build tools
     build-essential ninja-build cmake pkg-config \
-    # Python 3.10 & 3.11 + venv (we avoid 3.12 for TT stack to stay in known-good territory)
+    # Python 3.10 & 3.11 + venv (from deadsnakes PPA added above)
+    # We avoid 3.12 to stay in known-good territory for the TT stack.
     python3.10 python3.10-venv python3.10-dev \
     python3.11 python3.11-venv python3.11-dev \
     python3-pip \
@@ -57,9 +68,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cpufrequtils linux-tools-common linux-tools-generic \
     # Networking / misc
     iproute2 iputils-ping \
-    # For Rust / uv installation (curl + SSL etc are already present)
-    # Nothing extra, but keep comment for clarity
-    # Clean up
  && rm -rf /var/lib/apt/lists/*
 
 # Symlink clang-17 as default clang/clang++ for build scripts that use 'clang'
