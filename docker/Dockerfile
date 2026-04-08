@@ -175,14 +175,17 @@ RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
 # Full C++ build + Python venv install.
 # In checkout mode the script is still copied into the image so developers
 # can trigger it manually inside the running container:
-#   /tmp/build_tt_metal.sh
+#   bash /tmp/build_tt_metal.sh
+#
+# Note: COPY always creates files owned by root (UID 0), so we invoke the
+# scripts with `bash` instead of relying on the execute bit, which the dev
+# user cannot set on root-owned files.
 COPY scripts/build_tt_metal.sh /tmp/build_tt_metal.sh
-RUN chmod +x /tmp/build_tt_metal.sh && \
-    if [ "${TT_METAL_BUILD}" = "full" ]; then \
-      /tmp/build_tt_metal.sh; \
+RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
+      bash /tmp/build_tt_metal.sh; \
     else \
       echo "TT_METAL_BUILD=${TT_METAL_BUILD}: skipping tt-metal compilation."; \
-      echo "To build later inside the container: /tmp/build_tt_metal.sh"; \
+      echo "To build later inside the container: bash /tmp/build_tt_metal.sh"; \
     fi
 
 # ---------------------------------------------------------------------------
@@ -208,14 +211,13 @@ RUN git clone ${VLLM_REPO} /home/${DEV_USER}/tt-vllm && \
 # compiled tt-metal Python extensions, so `pip install -e .` will fail without
 # the build artifacts produced by build_tt_metal.sh.
 # To complete the vLLM install after building tt-metal at runtime:
-#   /tmp/setup_envs.sh vllm
+#   bash /tmp/setup_envs.sh vllm
 COPY scripts/setup_envs.sh /tmp/setup_envs.sh
-RUN chmod +x /tmp/setup_envs.sh && \
-    if [ "${TT_METAL_BUILD}" = "full" ]; then \
-      /tmp/setup_envs.sh vllm; \
+RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
+      bash /tmp/setup_envs.sh vllm; \
     else \
       echo "TT_METAL_BUILD=${TT_METAL_BUILD}: skipping vLLM pip install."; \
-      echo "Run /tmp/setup_envs.sh vllm after building tt-metal inside the container."; \
+      echo "Run: bash /tmp/setup_envs.sh vllm after building tt-metal inside the container."; \
     fi
 
 # ---------------------------------------------------------------------------
@@ -223,7 +225,7 @@ RUN chmod +x /tmp/setup_envs.sh && \
 # ---------------------------------------------------------------------------
 
 # Install TT-Forge, TT-Forge-ONNX, TT-XLA 0.8.0 into /opt/venv-forge
-RUN /tmp/setup_envs.sh forge
+RUN bash /tmp/setup_envs.sh forge
 
 # ---------------------------------------------------------------------------
 # 8. Environment wrapper scripts (for DX convenience)
