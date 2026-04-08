@@ -91,7 +91,13 @@ RUN userdel -r ubuntu 2>/dev/null || true && \
     groupadd -g ${DEV_GID} ${DEV_USER} && \
     useradd -m -u ${DEV_UID} -g ${DEV_GID} -s /bin/bash ${DEV_USER} && \
     usermod -aG sudo ${DEV_USER} && \
-    echo "${DEV_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-${DEV_USER}
+    echo "${DEV_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-${DEV_USER} && \
+    # Pre-create the venv directories in /opt/ with dev user ownership.
+    # The venv creation RUN later runs as DEV_USER, which cannot write to
+    # /opt/ (root-owned 755).  Creating the target dirs here as root and
+    # chown-ing them lets `python3.x -m venv /opt/venv-*` succeed.
+    mkdir -p /opt/venv-metal /opt/venv-vllm /opt/venv-forge && \
+    chown ${DEV_UID}:${DEV_GID} /opt/venv-metal /opt/venv-vllm /opt/venv-forge
 
 USER ${DEV_USER}
 WORKDIR /home/${DEV_USER}
