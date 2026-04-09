@@ -135,7 +135,9 @@ jobs:
       #    (not installed) in this mode.  Instead we verify:
       #      6a — tt-metal source tree is present at the pinned commit
       #      6b — tt-vllm source tree was cloned successfully
-      #      6c — TT-Forge-ONNX imports (Forge is always pip-installed)
+      #      6c — TT-Forge-ONNX and pjrt_plugin_tt import in venv-forge
+      #           (Forge is always pip-installed; pjrt_plugin_tt is copied
+      #            from ghcr.io/tenstorrent/tt-xla-slim via multi-stage build)
       # ----------------------------------------------------------------
 
       - name: "Smoke test 6a — tt-metal source tree at pinned commit"
@@ -164,7 +166,7 @@ jobs:
               echo 'tt-vllm checkout OK'
             "
 
-      - name: "Smoke test 6c — TT-Forge-ONNX import"
+      - name: "Smoke test 6c — TT-Forge-ONNX + pjrt_plugin_tt imports"
         run: |
           docker run --rm \
             ${{ steps.build.outputs.imageid }} \
@@ -172,6 +174,7 @@ jobs:
               set -e
               source /etc/profile.d/tt-env-forge.sh
               python -c \"import tt_forge_onnx; print('TT-Forge-ONNX OK:', tt_forge_onnx.__name__)\"
+              python -c \"import pjrt_plugin_tt; print('pjrt_plugin_tt OK:', pjrt_plugin_tt.__name__)\"
             "
 
       # ----------------------------------------------------------------

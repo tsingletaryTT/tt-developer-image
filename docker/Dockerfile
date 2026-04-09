@@ -24,7 +24,24 @@
 # because the Tenstorrent vLLM fork depends on compiled tt-metal Python
 # bindings.  In checkout mode a note is printed; run /tmp/setup_envs.sh vllm
 # inside the container after you've built tt-metal.
+#
+# Multi-stage build note:
+#   The tt-xla-slim stage provides pre-compiled PJRT plugin packages
+#   (pjrt_plugin_tt, jax_plugin_tt, tt_jax, ttxla_tools) built against
+#   JAX 0.7.1 and the TT-MLIR toolchain.  We COPY only the TT-specific
+#   packages into venv-forge; this avoids a ~30-min TT-MLIR source build.
 
+# ---------------------------------------------------------------------------
+# Stage 0: tt-xla-slim source
+#   Pull the Tenstorrent XLA slim image so we can COPY its pre-built
+#   PJRT plugin packages into venv-forge in section 7.
+#   This stage adds zero bytes to the final image — only COPY --from lines do.
+# ---------------------------------------------------------------------------
+FROM ghcr.io/tenstorrent/tt-xla-slim:latest AS tt-xla-slim
+
+# ---------------------------------------------------------------------------
+# Stage 1: main developer image
+# ---------------------------------------------------------------------------
 FROM ubuntu:24.04
 
 # Set noninteractive to avoid tzdata & friends prompting
@@ -35,9 +52,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 # ---------------------------------------------------------------------------
 
 # Ubuntu 24.04 (Noble) only ships Python 3.12 in its default repos.
-# The TT stack (tt-metal, vLLM) requires Python 3.10 / 3.11, so we add the
+# The TT stack (tt-metal, vLLM) requires Python 3.10, so we add the
 # deadsnakes PPA first.  This is a stable, well-known PPA maintained by the
 # Python core team for older CPython builds on Ubuntu.
+# Note: Python 3.12 (needed for venv-forge) is the Ubuntu 24.04 default and
+# does NOT require deadsnakes.
 # Splitting this into its own RUN layer means the PPA add is cached
 # independently from the package list below — useful when tweaking packages.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -47,17 +66,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Main system dependencies.
 # We:
-# - Install fundamental build tools, Python 3.10 + 3.11, Clang, CMake, etc.
+# - Install fundamental build tools, Python 3.10 (deadsnakes), Python 3.12
+#   (Ubuntu 24.04 default), Clang, CMake, etc.
 # - Include extra libs required by tt-metal, tt-mlir, tt-forge-onnx, tt-xla, vLLM
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # Core utilities
     bash ca-certificates curl wget git sudo apt-transport-https gnupg lsb-release \
     # Build tools
     build-essential ninja-build cmake pkg-config \
-    # Python 3.10 & 3.11 + venv (from deadsnakes PPA added above)
-    # We avoid 3.12 to stay in known-good territory for the TT stack.
+    # Python 3.10 + venv (from deadsnakes PPA): needed for venv-metal and venv-vllm.
+    # We avoid 3.12 for the tt-metal/vLLM stack to stay in known-good territory.
     python3.10 python3.10-venv python3.10-dev \
-    python3.11 python3.11-venv python3.11-dev \
+    # Python 3.12 venv/dev support (Ubuntu 24.04 native — no deadsnakes needed).
+    # Used for venv-forge: tt-forge-onnx wheels ship cp312-only.
+    python3.12-venv python3.12-dev \
     python3-pip \
     # Compilers
     clang-17 clang++-17 \
@@ -127,11 +149,16 @@ ENV PATH="/home/${DEV_USER}/.cargo/bin:${PATH}"
 # We create three venvs:
 #   /opt/venv-metal  - tt-metal, TTNN, basic tools (Python 3.10)
 #   /opt/venv-vllm   - vLLM + torch 2.5.0+cpu (Python 3.10)
-#   /opt/venv-forge  - TT-Forge + TT-Forge-ONNX + TT-XLA (0.8.0, Python 3.11)
+#   /opt/venv-forge  - TT-Forge-ONNX + TT-XLA PJRT plugin (Python 3.12)
+#
+# venv-forge uses Python 3.12 because:
+#   - tt-forge-onnx GitHub Release wheels ship cp312-only.
+#   - pjrt_plugin_tt (from tt-xla-slim) was compiled against cp312.
+#   - Python 3.12 is the Ubuntu 24.04 system default (no deadsnakes needed).
 
 RUN python3.10 -m venv /opt/venv-metal && \
     python3.10 -m venv /opt/venv-vllm && \
-    python3.11 -m venv /opt/venv-forge
+    python3.12 -m venv /opt/venv-forge
 
 # Upgrade pip in each venv
 RUN /opt/venv-metal/bin/pip install --upgrade pip && \
@@ -221,10 +248,66 @@ RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
     fi
 
 # ---------------------------------------------------------------------------
-# 7. Forge / TT-Forge-ONNX / TT-XLA env (0.8.0)
+# 7. Forge / TT-Forge-ONNX / TT-XLA env (Python 3.12)
 # ---------------------------------------------------------------------------
+#
+# The forge venv has two main components:
+#
+#   A) tt-forge-onnx  (tt_forge_onnx + tt_tvm wheels)
+#      Source: GitHub Releases — https://github.com/tenstorrent/tt-forge-onnx
+#      Wheels: cp312-only, nightly pre-releases.
+#      setup_envs.sh fetches the latest release via the GitHub API at build time.
+#
+#   B) tt-xla PJRT plugin  (pjrt_plugin_tt + JAX layer)
+#      Source: multi-stage COPY from ghcr.io/tenstorrent/tt-xla-slim:latest
+#      The slim image ships the plugin pre-compiled against JAX 0.7.1 and
+#      the TT-MLIR toolchain.  We transplant the TT-specific packages only;
+#      JAX itself is installed via pip in setup_envs.sh to keep the layers
+#      sensible.
+#
+# Step 7a: Copy TT-XLA packages from the slim image into venv-forge.
+#   Must happen after venv creation (section 4) but before setup_envs.sh forge
+#   so the smoke test in that script can verify pjrt_plugin_tt is importable.
+#
+# Packages copied:
+#   pjrt_plugin_tt        — JAX PJRT backend; contains pjrt_plugin_tt.so and
+#                           lib64/ with bundled libtt_metal.so, libTTMLIR*.so,
+#                           _ttnn.so, etc.  lib64/ uses rpath so no extra
+#                           LD_LIBRARY_PATH is needed.
+#   pjrt_plugin_tt.libs   — manylinux-style auditwheel-bundled .so files.
+#   pjrt_plugin_tt-*.dist-info — dist-info for `pip show` and JAX plugin
+#                           auto-discovery via entry_points.
+#   jax_plugin_tt         — registers pjrt_plugin_tt as a JAX backend.
+#   tt_jax                — TT JAX utility helpers (tracing, op wrappers).
+#   ttxla_tools           — XLA utility scripts.
+#
+# Note: COPY runs as root, landing these files root-owned in the venv.
+# Python only needs read access to import packages, so this is fine.
+COPY --from=tt-xla-slim \
+    /usr/local/lib/python3.12/dist-packages/pjrt_plugin_tt \
+    /opt/venv-forge/lib/python3.12/site-packages/pjrt_plugin_tt
+COPY --from=tt-xla-slim \
+    /usr/local/lib/python3.12/dist-packages/pjrt_plugin_tt.libs \
+    /opt/venv-forge/lib/python3.12/site-packages/pjrt_plugin_tt.libs
+COPY --from=tt-xla-slim \
+    /usr/local/lib/python3.12/dist-packages/pjrt_plugin_tt-1.0.0.dist-info \
+    /opt/venv-forge/lib/python3.12/site-packages/pjrt_plugin_tt-1.0.0.dist-info
+COPY --from=tt-xla-slim \
+    /usr/local/lib/python3.12/dist-packages/jax_plugin_tt \
+    /opt/venv-forge/lib/python3.12/site-packages/jax_plugin_tt
+COPY --from=tt-xla-slim \
+    /usr/local/lib/python3.12/dist-packages/tt_jax \
+    /opt/venv-forge/lib/python3.12/site-packages/tt_jax
+COPY --from=tt-xla-slim \
+    /usr/local/lib/python3.12/dist-packages/ttxla_tools \
+    /opt/venv-forge/lib/python3.12/site-packages/ttxla_tools
 
-# Install TT-Forge, TT-Forge-ONNX, TT-XLA 0.8.0 into /opt/venv-forge
+# Step 7b: Install JAX 0.7.1 + tt-forge-onnx into venv-forge.
+# setup_envs.sh forge:
+#   1. Installs jax==0.7.1 + jaxlib==0.7.1 to match the version the
+#      pjrt_plugin_tt was compiled against.
+#   2. Fetches the latest tt-forge-onnx GitHub Release cp312 wheels via the
+#      GitHub API and installs them (tt_forge_onnx + tt_tvm).
 RUN bash /tmp/setup_envs.sh forge
 
 # ---------------------------------------------------------------------------

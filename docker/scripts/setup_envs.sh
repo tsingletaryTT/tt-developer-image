@@ -64,45 +64,91 @@ EOF
   echo ">>> vLLM env setup complete"
 
 # ---------------------------------------------------------------------------
-# Forge env: tt-forge + tt-forge-onnx + pjrt-plugin-tt 0.8.0
+# Forge env: tt-forge-onnx (GitHub Releases) + JAX 0.7.1 (PyPI)
 # ---------------------------------------------------------------------------
+# pjrt_plugin_tt (the TT-XLA PJRT backend) is NOT installed here.
+# It is injected by the Dockerfile via COPY --from=tt-xla-slim before this
+# script runs, so it will already be present in the venv's site-packages.
+# We install JAX here to match the version the plugin was compiled against.
 elif [[ "$TARGET" == "forge" ]]; then
   VENV=/opt/venv-forge
-  # Pinned version for the entire Forge / XLA stack.
-  # Bump this together with TT_METAL_COMMIT when upgrading.
-  FORGE_VERSION=0.8.0
 
-  echo ">>> Configuring Forge env at $VENV (version $FORGE_VERSION)"
+  echo ">>> Configuring Forge env at $VENV (Python 3.12)"
 
   source "${VENV}/bin/activate"
 
-  # Install the three Forge wheels from the Tenstorrent internal PyPI mirror.
-  # Package names:
-  #   tt-forge        – meta wheel + compiler frontends
-  #   tt_forge_onnx   – ONNX → tt-forge bridge
-  #   pjrt-plugin-tt  – JAX / XLA PJRT plugin for Tenstorrent hardware
-  #
-  # NOTE: If the internal index URL changes, update --extra-index-url here
-  # and in any CI pipeline that rebuilds this image.
-  echo ">>> Installing TT-Forge ${FORGE_VERSION} stack"
+  # -------------------------------------------------------------------------
+  # 1. JAX 0.7.1 + jaxlib 0.7.1
+  #    Must match the version bundled in ghcr.io/tenstorrent/tt-xla-slim:latest
+  #    from which pjrt_plugin_tt was compiled.  Mismatched JAX/jaxlib versions
+  #    will cause import errors or silent runtime failures.
+  #    ml_dtypes and opt_einsum are required transitive deps of jax.
+  echo ">>> Installing JAX 0.7.1 (matches tt-xla-slim)"
   pip install --quiet \
-    tt-forge==${FORGE_VERSION} \
-    tt_forge_onnx==${FORGE_VERSION} \
-    pjrt-plugin-tt==${FORGE_VERSION} \
-    --extra-index-url https://pypi.eng.aws.tenstorrent.com/
+    jax==0.7.1 \
+    jaxlib==0.7.1 \
+    ml_dtypes \
+    opt_einsum
 
-  # Optional: uncomment to add JAX + torch-xla if your workflows need them.
-  # Pin versions carefully to avoid dependency conflicts with the TT XLA plugin.
-  # pip install --quiet jax==0.6.0 jaxlib==0.6.0 torch==2.7.0 torch-xla==2.7.0
+  # -------------------------------------------------------------------------
+  # 2. TT-Forge-ONNX wheels from GitHub Releases (cp312, latest nightly).
+  #    The tt-forge-onnx repo ships two wheels per release:
+  #      tt_forge_onnx  – ONNX → TT-Forge compiler bridge
+  #      tt_tvm         – TVM runtime pinned to the forge release
+  #
+  #    We query the GitHub API for the latest release and install all .whl
+  #    assets whose filename contains "cp312".  If the release structure
+  #    changes, inspect:
+  #      https://github.com/tenstorrent/tt-forge-onnx/releases/latest
+  echo ">>> Fetching latest tt-forge-onnx release wheels (cp312)"
 
-  # Smoke tests: check each wheel can be imported
-  python - << 'EOF'
-try:
-    import tt_forge_onnx as fonnx
-    print("TT-Forge-ONNX OK:", fonnx.__name__)
-except Exception as e:
-    print("TT-Forge-ONNX import FAILED:", e)
-EOF
+  ONNX_WHEEL_URLS=$(curl -fsSL \
+    https://api.github.com/repos/tenstorrent/tt-forge-onnx/releases/latest \
+    | python3 - << 'PYEOF'
+import sys, json
+data = json.load(sys.stdin)
+assets = data.get("assets", [])
+urls = [
+    a["browser_download_url"]
+    for a in assets
+    if "cp312" in a["name"] and a["name"].endswith(".whl")
+]
+if not urls:
+    print(
+        "ERROR: no cp312 .whl assets found in latest tt-forge-onnx release.\n"
+        "Check: https://github.com/tenstorrent/tt-forge-onnx/releases/latest",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+print("\n".join(urls))
+PYEOF
+  )
+
+  echo ">>> Wheels to install:"
+  echo "$ONNX_WHEEL_URLS"
+
+  # Install each wheel URL on its own pip invocation to get clear error output
+  # if one fails.  shellcheck disable=SC2086 is intentional: we want splitting.
+  while IFS= read -r url; do
+    pip install --quiet "$url"
+  done <<< "$ONNX_WHEEL_URLS"
+
+  # -------------------------------------------------------------------------
+  # Smoke tests
+  echo ">>> Running forge env smoke tests"
+
+  # tt_forge_onnx: installed from GitHub Releases above.
+  python3 -c "
+import tt_forge_onnx as fonnx
+print('TT-Forge-ONNX OK:', fonnx.__name__)
+"
+
+  # pjrt_plugin_tt: injected by Dockerfile COPY --from=tt-xla-slim.
+  # If this fails, the COPY step likely didn't land correctly.
+  python3 -c "
+import pjrt_plugin_tt
+print('pjrt_plugin_tt OK:', pjrt_plugin_tt.__name__)
+"
 
   deactivate
   echo ">>> Forge env setup complete"
