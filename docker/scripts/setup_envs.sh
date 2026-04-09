@@ -88,7 +88,16 @@ elif [[ "$TARGET" == "forge" ]]; then
     jax==0.7.1 \
     jaxlib==0.7.1 \
     ml_dtypes \
-    opt_einsum
+    opt_einsum \
+    loguru   # required by ttxla_tools.logging, which pjrt_plugin_tt imports at module level
+
+  # Note on pjrt_plugin_tt deps:
+  #   pjrt_plugin_tt-1.0.0.dist-info declares many runtime deps (torch, torch-xla,
+  #   click, pandas, etc.) that pip's resolver will warn about as missing.
+  #   These warnings are cosmetic here: pjrt_plugin_tt/__init__.py only imports
+  #   `ttxla_tools.logging` at module level (no torch, no torch-xla), so
+  #   `import pjrt_plugin_tt` works fine without them.  The full dep set is
+  #   only needed when using the plugin with PyTorch/XLA at runtime.
 
   # -------------------------------------------------------------------------
   # 2. TT-Forge-ONNX wheels from GitHub Releases (cp312, latest nightly).
@@ -102,9 +111,12 @@ elif [[ "$TARGET" == "forge" ]]; then
   #      https://github.com/tenstorrent/tt-forge-onnx/releases/latest
   echo ">>> Fetching latest tt-forge-onnx release wheels (cp312)"
 
+  # Note: do NOT use a heredoc (<<) here — inside $(...), a heredoc redirects
+  # python3's stdin, which conflicts with the curl pipe and produces empty JSON.
+  # Single-quoted -c '...' is the safe alternative.
   ONNX_WHEEL_URLS=$(curl -fsSL \
     https://api.github.com/repos/tenstorrent/tt-forge-onnx/releases/latest \
-    | python3 - << 'PYEOF'
+    | python3 -c '
 import sys, json
 data = json.load(sys.stdin)
 assets = data.get("assets", [])
@@ -121,8 +133,7 @@ if not urls:
     )
     sys.exit(1)
 print("\n".join(urls))
-PYEOF
-  )
+')
 
   echo ">>> Wheels to install:"
   echo "$ONNX_WHEEL_URLS"
