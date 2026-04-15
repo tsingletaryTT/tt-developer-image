@@ -319,9 +319,12 @@ RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
 RUN bash -c " \
     source /opt/venv-forge/bin/activate && \
     pip install --upgrade pip && \
-    pip install tt-forge \
+    pip install tt-forge tt-forge-onnx \
         --extra-index-url https://pypi.eng.aws.tenstorrent.com/ && \
     tt-forge-install"
+# tt-forge      — TT-XLA stack: pjrt_plugin_tt, JAX 0.7.1, torch-xla
+# tt-forge-onnx — forge.compile() API for PyTorch/ONNX → TT compilation
+# Both are installed together so the forge lesson needs no pip install step.
 
 # ---------------------------------------------------------------------------
 # 8. Environment wrapper scripts (for DX convenience)
