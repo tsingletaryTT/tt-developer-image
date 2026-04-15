@@ -141,20 +141,34 @@ print("\n".join(urls))
   echo ">>> Wheels to install:"
   echo "$ONNX_WHEEL_URLS"
 
-  # Install each wheel URL on its own pip invocation to get clear error output
-  # if one fails.  shellcheck disable=SC2086 is intentional: we want splitting.
+  # Download each wheel to disk first, then install locally.
+  #
+  # Why not `pip install <url>` directly?
+  #   pip's HTTP client drops large downloads (~300 MB) with BrokenPipeError
+  #   mid-stream, silently returns exit code 2, and leaves nothing installed.
+  #   curl is far more resilient for large files: it retries on transient drops,
+  #   streams to disk at full speed, and gives us clear exit codes.
+  #   We install from the local .whl file afterwards to avoid the problem entirely.
   while IFS= read -r url; do
-    pip install --quiet "$url"
+    fname=$(basename "$url")
+    echo ">>> Downloading ${fname} ..."
+    curl --retry 5 --retry-delay 10 --retry-all-errors \
+         -fSL --progress-bar \
+         -o "/tmp/${fname}" "$url"
+    echo ">>> Installing ${fname} ..."
+    pip install "/tmp/${fname}"
+    rm -f "/tmp/${fname}"
   done <<< "$ONNX_WHEEL_URLS"
 
   # -------------------------------------------------------------------------
   # Smoke tests
   echo ">>> Running forge env smoke tests"
 
-  # tt_forge_onnx: installed from GitHub Releases above.
+  # The pip package is named tt-forge-onnx but the importable module is 'forge'.
+  # (tt_forge_onnx is the dist-info name; the actual top-level package is forge/)
   python3 -c "
-import tt_forge_onnx as fonnx
-print('TT-Forge-ONNX OK:', fonnx.__name__)
+import forge
+print('TT-Forge-ONNX (forge) OK:', forge.__name__)
 "
 
   # pjrt_plugin_tt: injected by Dockerfile COPY --from=tt-xla-slim.

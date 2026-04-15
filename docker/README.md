@@ -132,7 +132,7 @@ python -c "import torch, vllm; print('torch', torch.__version__, 'vllm', vllm.__
 
 # 4. Activate the Forge env
 source /etc/profile.d/tt-env-forge.sh
-python -c "import tt_forge_onnx; print('Forge-ONNX ok')"
+python -c "import forge; print('Forge-ONNX ok')"
 ```
 
 ## Build-time Customisation

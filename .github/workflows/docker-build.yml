@@ -173,7 +173,7 @@ jobs:
             bash -c "
               set -e
               source /etc/profile.d/tt-env-forge.sh
-              python -c \"import tt_forge_onnx; print('TT-Forge-ONNX OK:', tt_forge_onnx.__name__)\"
+              python -c \"import forge; print('TT-Forge-ONNX (forge) OK:', forge.__name__)\"
               python -c \"import pjrt_plugin_tt; print('pjrt_plugin_tt OK:', pjrt_plugin_tt.__name__)\"
             "
 
