@@ -25,22 +25,20 @@
 # bindings.  In checkout mode a note is printed; run /tmp/setup_envs.sh vllm
 # inside the container after you've built tt-metal.
 #
-# Multi-stage build note:
-#   The tt-xla-slim stage provides pre-compiled PJRT plugin packages
-#   (pjrt_plugin_tt, jax_plugin_tt, tt_jax, ttxla_tools) built against
-#   JAX 0.7.1 and the TT-MLIR toolchain.  We COPY only the TT-specific
-#   packages into venv-forge; this avoids a ~30-min TT-MLIR source build.
+# Forge env note:
+#   tt-forge is installed from the Tenstorrent private PyPI index
+#   (https://pypi.eng.aws.tenstorrent.com/), matching the approach used by
+#   tt-code-server (git@github.com:tenstorrent/tt-code-server).
+#   No multi-stage build is used — the tt-forge wheel bundles the PJRT plugin,
+#   JAX layer, and TT-XLA tools.  tt-forge-install completes the setup.
 
 # ---------------------------------------------------------------------------
-# Stage 0: tt-xla-slim source
-#   Pull the Tenstorrent XLA slim image so we can COPY its pre-built
-#   PJRT plugin packages into venv-forge in section 7.
-#   This stage adds zero bytes to the final image — only COPY --from lines do.
+# Stage 0: not used.
+#   Forge is installed via pip from the Tenstorrent private PyPI
+#   (https://pypi.eng.aws.tenstorrent.com/), the same approach used by
+#   tt-code-server (git@github.com:tenstorrent/tt-code-server).
+#   No multi-stage build or COPY --from is needed.
 # ---------------------------------------------------------------------------
-# TODO(forge): Temporarily disabled — libncurses6 missing in ubuntu:24.04 causes
-# forge/_C.so import failure.  Re-enable once the apt dependency is added and
-# the smoke test is fixed.  See: https://github.com/tenstorrent/tt-developer-image
-# FROM ghcr.io/tenstorrent/tt-xla-slim:latest AS tt-xla-slim
 
 # ---------------------------------------------------------------------------
 # Stage 1: main developer image
@@ -86,9 +84,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     # Compilers
     clang-17 clang++-17 \
-    # Common libs for tt-mlir / tt-forge-onnx / tt-xla
+    # Common libs for tt-mlir / tt-forge / tt-xla
     protobuf-compiler libprotobuf-dev \
     libnuma-dev libhwloc-dev libboost-all-dev libnsl-dev \
+    # libncurses6: required by tt-forge native libraries (_C.so) at runtime.
+    # Ubuntu 24.04 ships libncurses6 but only as a transitive dep; explicit
+    # installation ensures it is always present regardless of apt pruning.
+    libncurses6 \
     # For performance / CPU governor commands (parity with docs)
     cpufrequtils linux-tools-common linux-tools-generic \
     # Networking / misc
@@ -152,11 +154,10 @@ ENV PATH="/home/${DEV_USER}/.cargo/bin:${PATH}"
 # We create three venvs:
 #   /opt/venv-metal  - tt-metal, TTNN, basic tools (Python 3.10)
 #   /opt/venv-vllm   - vLLM + torch 2.5.0+cpu (Python 3.10)
-#   /opt/venv-forge  - TT-Forge-ONNX + TT-XLA PJRT plugin (Python 3.12)
+#   /opt/venv-forge  - tt-forge compiler + TT-XLA PJRT plugin (Python 3.12)
 #
 # venv-forge uses Python 3.12 because:
-#   - tt-forge-onnx GitHub Release wheels ship cp312-only.
-#   - pjrt_plugin_tt (from tt-xla-slim) was compiled against cp312.
+#   - tt-forge wheels from the Tenstorrent private PyPI are cp312-only.
 #   - Python 3.12 is the Ubuntu 24.04 system default (no deadsnakes needed).
 
 RUN python3.10 -m venv /opt/venv-metal && \
@@ -291,68 +292,36 @@ RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
     fi
 
 # ---------------------------------------------------------------------------
-# 7. Forge / TT-Forge-ONNX / TT-XLA env (Python 3.12)
+# 7. Forge env — tt-forge from Tenstorrent private PyPI (Python 3.12)
 # ---------------------------------------------------------------------------
 #
-# The forge venv has two main components:
+# We follow the approach used in tt-code-server
+# (git@github.com:tenstorrent/tt-code-server): install tt-forge directly
+# from the Tenstorrent internal PyPI index, then run tt-forge-install to
+# complete the post-install setup (native runtime libs, tt-metalium backend).
 #
-#   A) tt-forge-onnx  (tt_forge_onnx + tt_tvm wheels)
-#      Source: GitHub Releases — https://github.com/tenstorrent/tt-forge-onnx
-#      Wheels: cp312-only, nightly pre-releases.
-#      setup_envs.sh fetches the latest release via the GitHub API at build time.
+# Why this approach instead of the multi-stage COPY from tt-xla-slim:
+#   - Single source of truth: the same PyPI wheels tt-code-server ships
+#   - No multi-stage build complexity (Stage 0 is unused)
+#   - tt-forge bundles the PJRT plugin, JAX layer, and TT-XLA tools in one package
+#   - Daily nightly builds mean the index always has a fresh release
 #
-#   B) tt-xla PJRT plugin  (pjrt_plugin_tt + JAX layer)
-#      Source: multi-stage COPY from ghcr.io/tenstorrent/tt-xla-slim:latest
-#      The slim image ships the plugin pre-compiled against JAX 0.7.1 and
-#      the TT-MLIR toolchain.  We transplant the TT-specific packages only;
-#      JAX itself is installed via pip in setup_envs.sh to keep the layers
-#      sensible.
+# Private PyPI index: https://pypi.eng.aws.tenstorrent.com/
+#   Packages available: tt-forge, tt-forge-fe, tt-forge-onnx, pjrt-plugin-tt,
+#                       torch-xla, tt-tvm, ttnn, vllm-tt, ttmlir, …
 #
-# Step 7a: Copy TT-XLA packages from the slim image into venv-forge.
-#   Must happen after venv creation (section 4) but before setup_envs.sh forge
-#   so the smoke test in that script can verify pjrt_plugin_tt is importable.
+# tt-forge requires Python 3.12 (cp312-only wheels). venv-forge was created
+# with python3.12 in section 4, so this installs into the correct interpreter.
 #
-# Packages copied:
-#   pjrt_plugin_tt        — JAX PJRT backend; contains pjrt_plugin_tt.so and
-#                           lib64/ with bundled libtt_metal.so, libTTMLIR*.so,
-#                           _ttnn.so, etc.  lib64/ uses rpath so no extra
-#                           LD_LIBRARY_PATH is needed.
-#   pjrt_plugin_tt.libs   — manylinux-style auditwheel-bundled .so files.
-#   pjrt_plugin_tt-*.dist-info — dist-info for `pip show` and JAX plugin
-#                           auto-discovery via entry_points.
-#   jax_plugin_tt         — registers pjrt_plugin_tt as a JAX backend.
-#   tt_jax                — TT JAX utility helpers (tracing, op wrappers).
-#   ttxla_tools           — XLA utility scripts.
-#
-# Note: COPY runs as root, landing these files root-owned in the venv.
-# Python only needs read access to import packages, so this is fine.
-# TODO(forge): COPY --from=tt-xla-slim disabled — Stage 0 is commented out.
-# Re-enable all lines below when forge support is restored.
-# COPY --from=tt-xla-slim \
-#     /usr/local/lib/python3.12/dist-packages/pjrt_plugin_tt \
-#     /opt/venv-forge/lib/python3.12/site-packages/pjrt_plugin_tt
-# COPY --from=tt-xla-slim \
-#     /usr/local/lib/python3.12/dist-packages/pjrt_plugin_tt.libs \
-#     /opt/venv-forge/lib/python3.12/site-packages/pjrt_plugin_tt.libs
-# COPY --from=tt-xla-slim \
-#     /usr/local/lib/python3.12/dist-packages/pjrt_plugin_tt-1.0.0.dist-info \
-#     /opt/venv-forge/lib/python3.12/site-packages/pjrt_plugin_tt-1.0.0.dist-info
-# COPY --from=tt-xla-slim \
-#     /usr/local/lib/python3.12/dist-packages/jax_plugin_tt \
-#     /opt/venv-forge/lib/python3.12/site-packages/jax_plugin_tt
-# COPY --from=tt-xla-slim \
-#     /usr/local/lib/python3.12/dist-packages/tt_jax \
-#     /opt/venv-forge/lib/python3.12/site-packages/tt_jax
-# COPY --from=tt-xla-slim \
-#     /usr/local/lib/python3.12/dist-packages/ttxla_tools \
-#     /opt/venv-forge/lib/python3.12/site-packages/ttxla_tools
-
-# Step 7b: Install JAX 0.7.1 + tt-forge-onnx into venv-forge.
-# TODO(forge): Disabled — see Stage 0 comment above.  Re-enable once:
-#   1. libncurses6 is added to the apt-get install list
-#   2. Stage 0 FROM is un-commented
-#   3. All COPY --from=tt-xla-slim lines above are un-commented
-# RUN bash /tmp/setup_envs.sh forge
+# tt-forge-install: post-install helper shipped in the tt-forge package.
+#   Downloads and configures the tt-metalium backend used by the forge compiler.
+#   Must be run once after pip install — safe to re-run if needed.
+RUN bash -c " \
+    source /opt/venv-forge/bin/activate && \
+    pip install --upgrade pip && \
+    pip install tt-forge \
+        --extra-index-url https://pypi.eng.aws.tenstorrent.com/ && \
+    tt-forge-install"
 
 # ---------------------------------------------------------------------------
 # 8. Environment wrapper scripts (for DX convenience)

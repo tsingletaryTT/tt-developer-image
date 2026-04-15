@@ -5,10 +5,14 @@
 #
 # Usage:
 #   ./setup_envs.sh vllm    # installs torch 2.5.0+cpu + Tenstorrent vLLM
-#   ./setup_envs.sh forge   # installs tt-forge / tt-forge-onnx / pjrt-plugin-tt 0.8.0
+#   ./setup_envs.sh forge   # installs tt-forge from Tenstorrent private PyPI
 #
 # Called by the Dockerfile in two separate RUN steps so Docker can cache each
 # env layer independently.
+#
+# Forge approach mirrors tt-code-server (github.com/tenstorrent/tt-code-server):
+#   pip install tt-forge --extra-index-url https://pypi.eng.aws.tenstorrent.com/
+#   tt-forge-install   # post-install: downloads metalium backend native libs
 
 set -euo pipefail
 
@@ -67,115 +71,53 @@ EOF
   echo ">>> vLLM env setup complete"
 
 # ---------------------------------------------------------------------------
-# Forge env: tt-forge-onnx (GitHub Releases) + JAX 0.7.1 (PyPI)
+# Forge env: tt-forge from Tenstorrent private PyPI (Python 3.12)
 # ---------------------------------------------------------------------------
-# pjrt_plugin_tt (the TT-XLA PJRT backend) is NOT installed here.
-# It is injected by the Dockerfile via COPY --from=tt-xla-slim before this
-# script runs, so it will already be present in the venv's site-packages.
-# We install JAX here to match the version the plugin was compiled against.
+# Mirrors the approach used by tt-code-server (github.com/tenstorrent/tt-code-server):
+#   1. pip install tt-forge from the Tenstorrent internal PyPI index.
+#      The tt-forge wheel bundles the TT-Forge compiler, TT-XLA PJRT plugin,
+#      and JAX/PyTorch integration layers — no separate JAX version-pinning needed.
+#   2. Run tt-forge-install to complete post-install setup (downloads the
+#      tt-metalium backend native libraries the compiler delegates to at runtime).
+#
+# Note: tt-installer handles forge differently — it creates a wrapper script
+# that runs tt-xla-slim as a Docker container (container-in-container).
+# For a developer image where forge should be a native Python environment,
+# the pip install approach is the right choice.
 elif [[ "$TARGET" == "forge" ]]; then
   VENV=/opt/venv-forge
 
   echo ">>> Configuring Forge env at $VENV (Python 3.12)"
+  echo ">>> Installing tt-forge from Tenstorrent private PyPI"
 
   source "${VENV}/bin/activate"
 
-  # -------------------------------------------------------------------------
-  # 1. JAX 0.7.1 + jaxlib 0.7.1
-  #    Must match the version bundled in ghcr.io/tenstorrent/tt-xla-slim:latest
-  #    from which pjrt_plugin_tt was compiled.  Mismatched JAX/jaxlib versions
-  #    will cause import errors or silent runtime failures.
-  #    ml_dtypes and opt_einsum are required transitive deps of jax.
-  echo ">>> Installing JAX 0.7.1 (matches tt-xla-slim)"
-  pip install --quiet \
-    jax==0.7.1 \
-    jaxlib==0.7.1 \
-    ml_dtypes \
-    opt_einsum \
-    loguru   # required by ttxla_tools.logging, which pjrt_plugin_tt imports at module level
+  pip install --upgrade pip
 
-  # Note on pjrt_plugin_tt deps:
-  #   pjrt_plugin_tt-1.0.0.dist-info declares many runtime deps (torch, torch-xla,
-  #   click, pandas, etc.) that pip's resolver will warn about as missing.
-  #   These warnings are cosmetic here: pjrt_plugin_tt/__init__.py only imports
-  #   `ttxla_tools.logging` at module level (no torch, no torch-xla), so
-  #   `import pjrt_plugin_tt` works fine without them.  The full dep set is
-  #   only needed when using the plugin with PyTorch/XLA at runtime.
+  # Install tt-forge (cp312, nightly).  The private PyPI index ships daily builds;
+  # pip resolves the latest compatible version automatically.
+  pip install tt-forge \
+    --extra-index-url https://pypi.eng.aws.tenstorrent.com/
 
-  # -------------------------------------------------------------------------
-  # 2. TT-Forge-ONNX wheels from GitHub Releases (cp312, latest nightly).
-  #    The tt-forge-onnx repo ships two wheels per release:
-  #      tt_forge_onnx  – ONNX → TT-Forge compiler bridge
-  #      tt_tvm         – TVM runtime pinned to the forge release
-  #
-  #    We query the GitHub API for the latest release and install all .whl
-  #    assets whose filename contains "cp312".  If the release structure
-  #    changes, inspect:
-  #      https://github.com/tenstorrent/tt-forge-onnx/releases/latest
-  echo ">>> Fetching latest tt-forge-onnx release wheels (cp312)"
-
-  # Note: do NOT use a heredoc (<<) here — inside $(...), a heredoc redirects
-  # python3's stdin, which conflicts with the curl pipe and produces empty JSON.
-  # Single-quoted -c '...' is the safe alternative.
-  ONNX_WHEEL_URLS=$(curl -fsSL \
-    https://api.github.com/repos/tenstorrent/tt-forge-onnx/releases/latest \
-    | python3 -c '
-import sys, json
-data = json.load(sys.stdin)
-assets = data.get("assets", [])
-urls = [
-    a["browser_download_url"]
-    for a in assets
-    if "cp312" in a["name"] and a["name"].endswith(".whl")
-]
-if not urls:
-    print(
-        "ERROR: no cp312 .whl assets found in latest tt-forge-onnx release.\n"
-        "Check: https://github.com/tenstorrent/tt-forge-onnx/releases/latest",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-print("\n".join(urls))
-')
-
-  echo ">>> Wheels to install:"
-  echo "$ONNX_WHEEL_URLS"
-
-  # Download each wheel to disk first, then install locally.
-  #
-  # Why not `pip install <url>` directly?
-  #   pip's HTTP client drops large downloads (~300 MB) with BrokenPipeError
-  #   mid-stream, silently returns exit code 2, and leaves nothing installed.
-  #   curl is far more resilient for large files: it retries on transient drops,
-  #   streams to disk at full speed, and gives us clear exit codes.
-  #   We install from the local .whl file afterwards to avoid the problem entirely.
-  while IFS= read -r url; do
-    fname=$(basename "$url")
-    echo ">>> Downloading ${fname} ..."
-    curl --retry 5 --retry-delay 10 --retry-all-errors \
-         -fSL --progress-bar \
-         -o "/tmp/${fname}" "$url"
-    echo ">>> Installing ${fname} ..."
-    pip install "/tmp/${fname}"
-    rm -f "/tmp/${fname}"
-  done <<< "$ONNX_WHEEL_URLS"
+  # Post-install helper: downloads and configures the tt-metalium backend that
+  # the forge compiler uses at runtime.  Safe to re-run if the backend needs
+  # refreshing.
+  tt-forge-install
 
   # -------------------------------------------------------------------------
   # Smoke tests
-  echo ">>> Running forge env smoke tests"
-
-  # The pip package is named tt-forge-onnx but the importable module is 'forge'.
-  # (tt_forge_onnx is the dist-info name; the actual top-level package is forge/)
-  python3 -c "
-import forge
-print('TT-Forge-ONNX (forge) OK:', forge.__name__)
-"
-
-  # pjrt_plugin_tt: injected by Dockerfile COPY --from=tt-xla-slim.
-  # If this fails, the COPY step likely didn't land correctly.
+  # tt-forge (private PyPI) = TT-XLA stack: pjrt_plugin_tt + JAX + torch-xla.
+  # The importable modules are pjrt_plugin_tt (TT PJRT backend) and jax.
+  # There is no top-level 'forge' module in this package — that would require
+  # tt-forge-onnx (ONNX bridge) or tt-forge-fe (compiler frontend, cp311-only).
+  echo ">>> Running forge smoke tests (pjrt_plugin_tt + JAX + torch-xla)"
   python3 -c "
 import pjrt_plugin_tt
-print('pjrt_plugin_tt OK:', pjrt_plugin_tt.__name__)
+import jax
+import torch_xla
+print('pjrt_plugin_tt OK (TT PJRT backend)')
+print('jax OK:', jax.__version__)
+print('torch_xla OK:', torch_xla.__version__)
 "
 
   deactivate
