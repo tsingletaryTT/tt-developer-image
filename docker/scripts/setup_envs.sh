@@ -39,6 +39,8 @@ if [[ "$TARGET" == "vllm" ]]; then
 
   # 2. Core Python packages that the Tenstorrent vLLM fork depends on.
   #    Pinning these prevents drift when pip resolves transitive deps.
+  #    huggingface-hub is included here so `hf auth login` / `hf download`
+  #    work from within the vLLM env for model management.
   echo ">>> Installing core vLLM dependencies"
   pip install --quiet \
     fairscale \
@@ -46,7 +48,8 @@ if [[ "$TARGET" == "vllm" ]]; then
     loguru \
     blobfile \
     fire \
-    pytz
+    pytz \
+    huggingface-hub
 
   # 3. Install the Tenstorrent vLLM fork from the cloned repo in editable
   #    mode so DX developers can iterate without reinstalling.

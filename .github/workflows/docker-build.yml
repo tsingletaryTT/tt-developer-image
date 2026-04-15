@@ -177,6 +177,37 @@ jobs:
               python -c \"import pjrt_plugin_tt; print('pjrt_plugin_tt OK:', pjrt_plugin_tt.__name__)\"
             "
 
+      - name: "Smoke test 6d — hf CLI available in venv-metal"
+        run: |
+          docker run --rm \
+            ${{ steps.build.outputs.imageid }} \
+            bash -c "
+              set -e
+              source /etc/profile.d/tt-env-metal.sh
+              hf --version
+              echo 'hf CLI OK'
+            "
+
+      - name: "Smoke test 6e — TT_METAL_ARCH_NAME default + override"
+        run: |
+          docker run --rm \
+            ${{ steps.build.outputs.imageid }} \
+            bash -c "
+              set -e
+              source /etc/profile.d/tt-env-metal.sh
+              [ \"\$TT_METAL_ARCH_NAME\" = 'wormhole_b0' ] || (echo 'ERROR: expected wormhole_b0, got '\$TT_METAL_ARCH_NAME && exit 1)
+              echo 'Default arch OK: '\$TT_METAL_ARCH_NAME
+            "
+          docker run --rm \
+            -e TT_METAL_ARCH_NAME=blackhole \
+            ${{ steps.build.outputs.imageid }} \
+            bash -c "
+              set -e
+              source /etc/profile.d/tt-env-metal.sh
+              [ \"\$TT_METAL_ARCH_NAME\" = 'blackhole' ] || (echo 'ERROR: expected blackhole, got '\$TT_METAL_ARCH_NAME && exit 1)
+              echo 'Override arch OK: '\$TT_METAL_ARCH_NAME
+            "
+
       # ----------------------------------------------------------------
       # 7. Push to GHCR after all smoke tests pass.
       #    Skipped on PRs — build-only validation is enough there.

@@ -165,6 +165,13 @@ RUN /opt/venv-metal/bin/pip install --upgrade pip && \
     /opt/venv-vllm/bin/pip install --upgrade pip && \
     /opt/venv-forge/bin/pip install --upgrade pip
 
+# Install huggingface-hub into venv-metal and venv-vllm.
+# Provides the `hf` CLI (hf auth login, hf download) used in lessons and
+# by vLLM model-loading workflows.  The `hf` binary lands in venv/bin and
+# is available whenever the corresponding env is active.
+RUN /opt/venv-metal/bin/pip install --quiet huggingface-hub && \
+    /opt/venv-vllm/bin/pip install --quiet huggingface-hub
+
 # ---------------------------------------------------------------------------
 # 5. Clone tt-metal at pinned commit; optionally build from source
 # ---------------------------------------------------------------------------
@@ -219,16 +226,17 @@ RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
 # 6. vLLM env: Tenstorrent fork, pinned torch 2.5.0+cpu
 # ---------------------------------------------------------------------------
 
-# Pin vLLM repo & commit to align with tt-inference-server 0.10.0 dev image.
-# Replace VLLM_COMMIT if you have the exact hash from that release.
+# Clone Tenstorrent vLLM fork at the HEAD of the dev branch.
+# We track branch HEAD rather than pinning to a specific commit because the
+# dev branch is the integration target for current tt-metal builds; a stale
+# commit pin frequently drifts out of sync with the tt-metal commit above.
+# If you need a reproducible build, pass --build-arg VLLM_BRANCH=<tag or sha>.
 ARG VLLM_REPO=https://github.com/tenstorrent/vllm.git
 ARG VLLM_BRANCH=dev
-ARG VLLM_COMMIT=22be241 # placeholder; set to actual matching commit
 
 RUN git clone ${VLLM_REPO} /home/${DEV_USER}/tt-vllm && \
     cd /home/${DEV_USER}/tt-vllm && \
-    git checkout ${VLLM_BRANCH} && \
-    ( [ "${VLLM_COMMIT}" = "22be241" ] || git checkout ${VLLM_COMMIT} || true )
+    git checkout ${VLLM_BRANCH}
 
 # Install vLLM dependencies in /opt/venv-vllm:
 #   - PyTorch 2.5.0+cpu
@@ -322,6 +330,16 @@ RUN bash /tmp/setup_envs.sh forge
 RUN echo 'unset TT_METAL_HOME TT_METAL_VERSION' >> /etc/profile && \
     printf '%s\n' \
       '#!/bin/bash' \
+      '# TT_METAL_ARCH_NAME — tell tt-metal which silicon architecture you are running on.' \
+      '#   Wormhole (N150 / N300 / T3K / Galaxy):      wormhole_b0' \
+      '#   Blackhole (P100 / P150 / P300c / QB2):      blackhole' \
+      '#' \
+      '# The value below is the default used when TT_METAL_ARCH_NAME is not already set' \
+      '# in the environment.  To override, either:' \
+      '#   export TT_METAL_ARCH_NAME=blackhole   # before sourcing this script' \
+      '#   -or- pass  -e TT_METAL_ARCH_NAME=blackhole  to docker run.' \
+      ': "${TT_METAL_ARCH_NAME:=wormhole_b0}"' \
+      'export TT_METAL_ARCH_NAME' \
       'export TT_METAL_HOME=/home/'"${DEV_USER}"'/tt-metal' \
       'export PYTHONPATH=$TT_METAL_HOME:$PYTHONPATH' \
       'export LD_LIBRARY_PATH=/home/'"${DEV_USER}"'/tt-metal/build/lib:$LD_LIBRARY_PATH' \
@@ -330,6 +348,10 @@ RUN echo 'unset TT_METAL_HOME TT_METAL_VERSION' >> /etc/profile && \
     sudo chmod +x /etc/profile.d/tt-env-metal.sh && \
     printf '%s\n' \
       '#!/bin/bash' \
+      '# TT_METAL_ARCH_NAME — wormhole_b0 (N150/N300/T3K) or blackhole (P100/P150/P300c/QB2).' \
+      '# Override: export TT_METAL_ARCH_NAME=blackhole  or  docker run -e TT_METAL_ARCH_NAME=blackhole' \
+      ': "${TT_METAL_ARCH_NAME:=wormhole_b0}"' \
+      'export TT_METAL_ARCH_NAME' \
       'unset TT_METAL_VERSION' \
       'export TT_METAL_HOME=/home/'"${DEV_USER}"'/tt-metal' \
       'source /opt/venv-vllm/bin/activate' \
@@ -337,6 +359,10 @@ RUN echo 'unset TT_METAL_HOME TT_METAL_VERSION' >> /etc/profile && \
     sudo chmod +x /etc/profile.d/tt-env-vllm.sh && \
     printf '%s\n' \
       '#!/bin/bash' \
+      '# TT_METAL_ARCH_NAME — wormhole_b0 (N150/N300/T3K) or blackhole (P100/P150/P300c/QB2).' \
+      '# Override: export TT_METAL_ARCH_NAME=blackhole  or  docker run -e TT_METAL_ARCH_NAME=blackhole' \
+      ': "${TT_METAL_ARCH_NAME:=wormhole_b0}"' \
+      'export TT_METAL_ARCH_NAME' \
       'unset TT_METAL_VERSION' \
       'export TT_METAL_HOME=/home/'"${DEV_USER}"'/tt-metal' \
       'source /opt/venv-forge/bin/activate' \
