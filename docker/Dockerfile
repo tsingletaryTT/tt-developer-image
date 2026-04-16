@@ -319,12 +319,24 @@ RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
 RUN bash -c " \
     source /opt/venv-forge/bin/activate && \
     pip install --upgrade pip && \
-    pip install tt-forge tt-forge-onnx \
+    pip install tt-forge tt-forge-onnx tt-smi \
         --extra-index-url https://pypi.eng.aws.tenstorrent.com/ && \
     tt-forge-install"
 # tt-forge      — TT-XLA stack: pjrt_plugin_tt, JAX 0.7.1, torch-xla
 # tt-forge-onnx — forge.compile() API for PyTorch/ONNX → TT compilation
-# Both are installed together so the forge lesson needs no pip install step.
+# tt-smi        — hardware monitor; available in all three envs for convenience
+
+# ---------------------------------------------------------------------------
+# 7b. Pre-clone tt-forge demo repository
+# ---------------------------------------------------------------------------
+# Cloning during the image build means the VSCode lesson's
+# "Clone and Run TT-Forge Demos" button is instant (no git-clone progress bar
+# mid-demo).  The repo contains validated GPT-2, ALBERT, OPT, and ResNet
+# demos in demos/tt-xla/; pip install -r requirements.txt is still needed
+# at runtime (handled by the lesson command).
+# --depth 1: only the tip of main — keeps the layer small (~10 MB).
+RUN git clone --depth 1 https://github.com/tenstorrent/tt-forge.git \
+        /home/${DEV_USER}/tt-forge
 
 # ---------------------------------------------------------------------------
 # 8. Environment wrapper scripts (for DX convenience)
@@ -425,7 +437,35 @@ EXPOSE 8080
 WORKDIR /home/${DEV_USER}
 ENV DEBIAN_FRONTEND=dialog
 
-# Default shell: no envs activated (must opt-in with profile scripts).
+# ---------------------------------------------------------------------------
+# Pre-create ~/tt-scratchpad/
+# ---------------------------------------------------------------------------
+# Extension commands write scripts here.  Creating it now means
+# "ls ~/tt-scratchpad" works from minute one and scripts accumulate visibly.
+RUN mkdir -p /home/${DEV_USER}/tt-scratchpad && \
+    printf '# tt-scratchpad\n# Scripts created here by the Tenstorrent VSCode extension.\n# Add your own experiments freely — nothing here is precious.\n' \
+    > /home/${DEV_USER}/tt-scratchpad/README.md
+
+# ---------------------------------------------------------------------------
+# Shell convenience functions: tt-metal | tt-vllm | tt-forge
+# ---------------------------------------------------------------------------
+# These let users switch Python environments by typing a short name instead
+# of remembering the full path to each profile script.
+#
+#   tt-metal   → activates venv-metal (TTNN / direct API)
+#   tt-vllm    → activates venv-vllm  (production serving)
+#   tt-forge   → activates venv-forge (JAX / forge.compile)
+#
+# Implementation notes:
+#   - bash function names may contain hyphens; they are called the same way.
+#   - "deactivate 2>/dev/null || true" safely no-ops when no venv is active.
+#   - "source" is used (not ".") for readability; both work in bash.
+#   - The guard "grep -q" keeps the block idempotent if .bashrc is rebuilt.
+RUN grep -q 'tt-metal()' /home/${DEV_USER}/.bashrc 2>/dev/null || \
+    printf '\n# ── Tenstorrent environment switchers ───────────────────────\n# Usage: tt-metal  |  tt-vllm  |  tt-forge\ntt-metal() { deactivate 2>/dev/null || true; source /etc/profile.d/tt-env-metal.sh; }\ntt-vllm()  { deactivate 2>/dev/null || true; source /etc/profile.d/tt-env-vllm.sh;  }\ntt-forge() { deactivate 2>/dev/null || true; source /etc/profile.d/tt-env-forge.sh; }\n# ─────────────────────────────────────────────────────────────\n' \
+    >> /home/${DEV_USER}/.bashrc
+
+# Default shell: no envs activated (must opt-in with profile scripts or switchers).
 # To start code-server instead:
 #   docker run -p 8080:8080 -e PASSWORD=... <image> \
 #     code-server --bind-addr 0.0.0.0:8080 --auth password \
