@@ -222,6 +222,9 @@ ARG TT_METAL_COMMIT=555f240b7dbfadd6634e958faedb516bfaf6f9c4
 #   checkout  (default) — clone only, no build
 #   full                — clone + install_dependencies.sh + build + pip install
 ARG TT_METAL_BUILD=checkout
+# ttsim version to download. Use "latest" to track latest release, or pin
+# to a specific tag (e.g. "v1.7.0") for reproducible sim builds.
+ARG TTSIM_VERSION=latest
 
 # Clone is always performed regardless of TT_METAL_BUILD mode.
 # Having the source tree present lets developers build at runtime if needed
@@ -236,7 +239,7 @@ ENV TT_METAL_HOME=/home/${DEV_USER}/tt-metal
 
 # Install tt-metal system dependencies — only needed when we're about to build.
 # Skipped in checkout mode to keep that path fast.
-RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
+RUN if [ "${TT_METAL_BUILD}" = "full" ] || [ "${TT_METAL_BUILD}" = "sim" ]; then \
       cd ${TT_METAL_HOME} && sudo ./install_dependencies.sh || true; \
     else \
       echo "TT_METAL_BUILD=${TT_METAL_BUILD}: skipping install_dependencies.sh"; \
@@ -251,7 +254,7 @@ RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
 # scripts with `bash` instead of relying on the execute bit, which the dev
 # user cannot set on root-owned files.
 COPY scripts/build_tt_metal.sh /tmp/build_tt_metal.sh
-RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
+RUN if [ "${TT_METAL_BUILD}" = "full" ] || [ "${TT_METAL_BUILD}" = "sim" ]; then \
       bash /tmp/build_tt_metal.sh; \
     else \
       echo "TT_METAL_BUILD=${TT_METAL_BUILD}: skipping tt-metal compilation."; \
@@ -284,7 +287,7 @@ RUN git clone ${VLLM_REPO} /home/${DEV_USER}/tt-vllm && \
 # To complete the vLLM install after building tt-metal at runtime:
 #   bash /tmp/setup_envs.sh vllm
 COPY scripts/setup_envs.sh /tmp/setup_envs.sh
-RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
+RUN if [ "${TT_METAL_BUILD}" = "full" ] || [ "${TT_METAL_BUILD}" = "sim" ]; then \
       bash /tmp/setup_envs.sh vllm; \
     else \
       echo "TT_METAL_BUILD=${TT_METAL_BUILD}: skipping vLLM pip install."; \
