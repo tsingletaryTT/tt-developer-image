@@ -75,6 +75,51 @@ docker run -it \
   tenstorrent/dev:latest bash
 ```
 
+### Simulator (no hardware required)
+
+Build once on QB2 (x86_64 Linux), then pull from GHCR anywhere:
+
+```bash
+# Pull pre-built image (once available on GHCR)
+docker pull ghcr.io/tsingletary/tt-developer-image:sim-wh
+
+# Or build locally on x86_64 Linux (~60–90 min)
+docker build --build-arg TT_METAL_BUILD=sim \
+             --build-arg TTSIM_VERSION=v1.7.0 \
+             -t tt-sim:latest docker/
+
+# Run (no /dev/tenstorrent needed)
+docker run -it tt-sim:latest bash
+
+# Inside the container:
+tt-sim                        # activate Wormhole simulator
+# or
+tt-sim-bh                     # activate Blackhole simulator
+python -c "import ttnn; print('TTNN ready')"
+
+# Browser VS Code (port 8080)
+docker run -d -p 8080:8080 -e PASSWORD=tenstorrent \
+  tt-sim:latest \
+  code-server --bind-addr 0.0.0.0:8080 --auth password \
+              --disable-telemetry --disable-update-check
+```
+
+**What works in sim mode:**
+- tt-metal / TTNN ops (slow dispatch mode, bit-exact results)
+- TT-Lang kernels via ttlang-sim or ttsim
+- TT-Forge compiler lessons (Forge uses its own backend, not ttsim)
+- CS fundamentals lessons (Tensix visualizer, no hardware calls)
+- `tt-toplike` in mock mode (monitoring UX without real hardware)
+
+**What does not work in sim mode:**
+- vLLM inference (requires fast dispatch, not yet supported by ttsim)
+- QB2 multi-device lessons (require real PCI hardware)
+
+**Known sim constraints (set automatically by `tt-sim`):**
+- `TT_METAL_SLOW_DISPATCH_MODE=1` — required
+- `TT_METAL_DISABLE_SFPLOADMACRO=1` — required
+- `SIMULATOR_MODE=1` — picked up by tt-vscode-toolkit for status indicator
+
 ### Browser-based VS Code (code-server)
 
 ```bash
@@ -139,7 +184,8 @@ python -c "import forge; print('Forge-ONNX ok')"
 
 | Build arg | Default | Description |
 |---|---|---|
-| `TT_METAL_BUILD` | `checkout` | `checkout` (clone only) or `full` (compile) |
+| `TT_METAL_BUILD` | `checkout` | `checkout` (clone only), `full` (compile), or `sim` (compile + ttsim binaries) |
+| `TTSIM_VERSION` | `latest` | ttsim release tag (`latest` or e.g. `v1.7.0`). Only used in `sim` mode |
 | `TT_METAL_COMMIT` | pinned SHA | tt-metal commit to check out |
 | `VLLM_BRANCH` | `dev` | Tenstorrent vLLM branch to track |
 | `DEV_USER` | `dev` | Username inside the container |
@@ -165,3 +211,26 @@ docker build \
 - **Forge packages** — `tt_forge_onnx` is fetched from public GitHub Releases;
   `pjrt_plugin_tt` (TT-XLA PJRT backend) comes from `ghcr.io/tenstorrent/tt-xla-slim`
   via a multi-stage build.  No internal Tenstorrent network access needed.
+
+## Publishing to GHCR (manual)
+
+Build on QB2 and push with a GitHub PAT (`write:packages` scope):
+
+```bash
+# Build
+cd docker
+docker build --build-arg TT_METAL_BUILD=sim \
+             --build-arg TTSIM_VERSION=v1.7.0 \
+             -t ghcr.io/tsingletary/tt-developer-image:sim-wh .
+
+# Login and push
+echo $GH_PAT | docker login ghcr.io -u tsingletary --password-stdin
+docker push ghcr.io/tsingletary/tt-developer-image:sim-wh
+
+# Also push a bh-default tag (same image, communicates default arch)
+docker tag ghcr.io/tsingletary/tt-developer-image:sim-wh \
+           ghcr.io/tsingletary/tt-developer-image:sim-bh
+docker push ghcr.io/tsingletary/tt-developer-image:sim-bh
+```
+
+To make the package public after pushing: GitHub → your profile → Packages → tt-developer-image → Package settings → Change visibility → Public.
