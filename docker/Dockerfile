@@ -458,6 +458,12 @@ RUN if [ "${TT_METAL_BUILD}" = "sim" ]; then \
       '# Override: docker run -e TT_SIM_ARCH=bh ...' \
       ': "${TT_SIM_ARCH:=wh}"' \
       'export TT_SIM_ARCH' \
+      '# Map TT_SIM_ARCH to TT_METAL_ARCH_NAME (used by TTNN/tt-metal internally)' \
+      'if [ "${TT_SIM_ARCH}" = "bh" ]; then' \
+      '  export TT_METAL_ARCH_NAME=blackhole' \
+      'else' \
+      '  export TT_METAL_ARCH_NAME=wormhole_b0' \
+      'fi' \
       'export TT_METAL_HOME=/home/'"${DEV_USER}"'/tt-metal' \
       'export PYTHONPATH=$TT_METAL_HOME:$PYTHONPATH' \
       'export LD_LIBRARY_PATH=$TT_METAL_HOME/build/lib:$LD_LIBRARY_PATH' \
