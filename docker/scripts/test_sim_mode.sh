@@ -54,6 +54,7 @@ check "TT_METAL_DISABLE_SFPLOADMACRO=1" "test \"$TT_METAL_DISABLE_SFPLOADMACRO\"
 check "TT_METAL_SIMULATOR points to wh .so" "test \"$TT_METAL_SIMULATOR\" = \"$HOME/sim/wh/libttsim_wh.so\""
 check "TT_METAL_HOME set" "test -n \"$TT_METAL_HOME\""
 check "TT_SIM_ARCH defaults to wh" "test \"$TT_SIM_ARCH\" = 'wh'"
+check "TT_METAL_ARCH_NAME=wormhole_b0 (default)" "test \"$TT_METAL_ARCH_NAME\" = 'wormhole_b0'"
 check "LD_LIBRARY_PATH includes tt-metal build/lib" "echo \"\$LD_LIBRARY_PATH\" | tr ':' '\n' | grep -q 'tt-metal/build/lib'"
 check "venv-metal activated" "python -c 'import sys; assert \"/opt/venv-metal\" in sys.prefix'"
 

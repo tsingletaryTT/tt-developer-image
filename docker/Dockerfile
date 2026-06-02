@@ -229,6 +229,7 @@ ARG TT_METAL_COMMIT=555f240b7dbfadd6634e958faedb516bfaf6f9c4
 # See the file header for a full description of each mode.
 #   checkout  (default) — clone only, no build
 #   full                — clone + install_dependencies.sh + build + pip install
+#   sim                 — same as full, plus ttsim WH/BH binaries (hardware-free)
 ARG TT_METAL_BUILD=checkout
 # ttsim version to download. Use "latest" to track latest release, or pin
 # to a specific tag (e.g. "v1.7.0") for reproducible sim builds.
