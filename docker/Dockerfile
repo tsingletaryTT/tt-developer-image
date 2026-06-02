@@ -446,6 +446,32 @@ RUN echo 'unset TT_METAL_HOME TT_METAL_VERSION' | sudo tee -a /etc/profile > /de
     | sudo tee /etc/profile.d/tt-env-forge.sh > /dev/null && \
     sudo chmod +x /etc/profile.d/tt-env-forge.sh
 
+# tt-env-sim.sh — simulator environment (sim build mode only).
+# Activates venv-metal with ttsim backend variables set.
+# TT_SIM_ARCH controls which simulator is active: "wh" (default) or "bh".
+# Override at docker run: docker run -e TT_SIM_ARCH=bh ...
+RUN if [ "${TT_METAL_BUILD}" = "sim" ]; then \
+    printf '%s\n' \
+      '#!/bin/bash' \
+      '# tt-env-sim.sh — venv-metal + ttsim backend.' \
+      '# TT_SIM_ARCH: "wh" (Wormhole, default) or "bh" (Blackhole).' \
+      '# Override: docker run -e TT_SIM_ARCH=bh ...' \
+      ': "${TT_SIM_ARCH:=wh}"' \
+      'export TT_SIM_ARCH' \
+      'export TT_METAL_HOME=/home/'"${DEV_USER}"'/tt-metal' \
+      'export PYTHONPATH=$TT_METAL_HOME:$PYTHONPATH' \
+      'export LD_LIBRARY_PATH=$TT_METAL_HOME/build/lib:$LD_LIBRARY_PATH' \
+      'export TT_METAL_SIMULATOR="$HOME/sim/${TT_SIM_ARCH}/libttsim_${TT_SIM_ARCH}.so"' \
+      'export TT_METAL_SLOW_DISPATCH_MODE=1' \
+      'export TT_METAL_DISABLE_SFPLOADMACRO=1' \
+      'export SIMULATOR_MODE=1' \
+      'source /opt/venv-metal/bin/activate' \
+    | sudo tee /etc/profile.d/tt-env-sim.sh > /dev/null && \
+    sudo chmod +x /etc/profile.d/tt-env-sim.sh; \
+  else \
+    echo "TT_METAL_BUILD=${TT_METAL_BUILD}: skipping tt-env-sim.sh"; \
+  fi
+
 # ---------------------------------------------------------------------------
 # 9. code-server + tt-vscode-toolkit
 # ---------------------------------------------------------------------------
