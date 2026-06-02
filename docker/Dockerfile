@@ -556,7 +556,7 @@ RUN grep -q 'tt-metal()' /home/${DEV_USER}/.bashrc 2>/dev/null || \
 
 # Sim-mode shell switchers and welcome banner (sim build mode only).
 RUN if [ "${TT_METAL_BUILD}" = "sim" ]; then \
-    printf '\n# ── Tenstorrent simulator switchers ─────────────────────────\n# Usage: tt-sim  |  tt-sim-bh\ntt-sim()    { deactivate 2>/dev/null || true; source /etc/profile.d/tt-env-sim.sh; }\ntt-sim-bh() { TT_SIM_ARCH=bh tt-sim; }\n# ─────────────────────────────────────────────────────────────\n' \
+    printf '\n# ── Tenstorrent simulator switchers ─────────────────────────\n# Usage: tt-sim  |  tt-sim-bh\ntt-sim()    { deactivate 2>/dev/null || true; source /etc/profile.d/tt-env-sim.sh; }\ntt-sim-bh() { export TT_SIM_ARCH=bh; tt-sim; }\n# ─────────────────────────────────────────────────────────────\n' \
     >> /home/${DEV_USER}/.bashrc && \
     printf '\n# ── Simulator welcome ────────────────────────────────────────\necho ""\necho "  Tenstorrent Simulator Image"\necho "  No hardware required."\necho ""\necho "  tt-sim         activate Wormhole simulator environment"\necho "  tt-sim-bh      activate Blackhole simulator environment"\necho "  tt-toplike     hardware monitoring (mock mode)"\necho "  tt-metal       activate venv-metal (for non-sim use)"\necho ""\n# ─────────────────────────────────────────────────────────────\n' \
     >> /home/${DEV_USER}/.bashrc; \
