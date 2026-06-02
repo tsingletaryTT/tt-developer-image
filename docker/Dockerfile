@@ -376,8 +376,14 @@ RUN if [ "${TT_METAL_BUILD}" = "sim" ]; then \
         BASE_URL="https://github.com/tenstorrent/ttsim/releases/download/${TTSIM_VERSION}"; \
       fi && \
       echo ">>> Downloading ttsim from ${BASE_URL}" && \
-      wget -q "${BASE_URL}/libttsim_wh.so" -O ~/sim/wh/libttsim_wh.so && \
-      wget -q "${BASE_URL}/libttsim_bh.so" -O ~/sim/bh/libttsim_bh.so && \
+      wget --no-verbose --tries=3 --timeout=60 \
+           "${BASE_URL}/libttsim_wh.so" -O ~/sim/wh/libttsim_wh.so && \
+      [ $(stat -c%s ~/sim/wh/libttsim_wh.so) -gt 100000 ] || \
+        { echo "ERROR: libttsim_wh.so download looks truncated or failed"; exit 1; } && \
+      wget --no-verbose --tries=3 --timeout=60 \
+           "${BASE_URL}/libttsim_bh.so" -O ~/sim/bh/libttsim_bh.so && \
+      [ $(stat -c%s ~/sim/bh/libttsim_bh.so) -gt 100000 ] || \
+        { echo "ERROR: libttsim_bh.so download looks truncated or failed"; exit 1; } && \
       echo ">>> Copying SOC descriptor YAMLs" && \
       cp "${TT_METAL_HOME}/tt_metal/soc_descriptors/wormhole_b0_80_arch.yaml" \
          ~/sim/wh/soc_descriptor.yaml && \
