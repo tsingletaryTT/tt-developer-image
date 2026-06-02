@@ -3,7 +3,8 @@
 # Run inside the container:
 #   docker run --rm <image> bash /tmp/test_sim_mode.sh
 #
-# Exits 0 if all checks pass, 1 on first failure.
+# Exits 0 if all checks pass, non-zero if any check fails.
+# All checks always run; see the summary at the end for a full picture.
 set -euo pipefail
 
 PASS=0
@@ -38,12 +39,22 @@ check "libttsim_wh.so is an ELF shared lib" "file ~/sim/wh/libttsim_wh.so | grep
 check "libttsim_bh.so is an ELF shared lib" "file ~/sim/bh/libttsim_bh.so | grep -q 'shared object'"
 
 # --- Env vars set correctly after sourcing tt-env-sim.sh
-source /etc/profile.d/tt-env-sim.sh
+if ! source /etc/profile.d/tt-env-sim.sh 2>/dev/null; then
+    echo "  FAIL  source /etc/profile.d/tt-env-sim.sh (file missing or has errors)"
+    FAIL=$((FAIL + 1))
+    echo ""
+    echo "=== Results: $PASS passed, $FAIL failed ==="
+    echo "  (Remaining env-var and import checks skipped — profile script absent)"
+    echo ""
+    exit 1
+fi
 check "SIMULATOR_MODE=1" "test \"$SIMULATOR_MODE\" = '1'"
 check "TT_METAL_SLOW_DISPATCH_MODE=1" "test \"$TT_METAL_SLOW_DISPATCH_MODE\" = '1'"
 check "TT_METAL_DISABLE_SFPLOADMACRO=1" "test \"$TT_METAL_DISABLE_SFPLOADMACRO\" = '1'"
 check "TT_METAL_SIMULATOR points to wh .so" "test \"$TT_METAL_SIMULATOR\" = \"$HOME/sim/wh/libttsim_wh.so\""
 check "TT_METAL_HOME set" "test -n \"$TT_METAL_HOME\""
+check "TT_SIM_ARCH defaults to wh" "test \"$TT_SIM_ARCH\" = 'wh'"
+check "LD_LIBRARY_PATH includes tt-metal build/lib" "echo \"\$LD_LIBRARY_PATH\" | tr ':' '\n' | grep -q 'tt-metal/build/lib'"
 check "venv-metal activated" "python -c 'import sys; assert \"/opt/venv-metal\" in sys.prefix'"
 
 # --- TTNN importable in sim env
