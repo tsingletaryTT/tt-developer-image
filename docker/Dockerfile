@@ -20,6 +20,14 @@
 #     images.  Build time: 30–90 min.
 #       docker build --build-arg TT_METAL_BUILD=full -t tenstorrent/dev-n150:latest .
 #
+#   sim
+#     same as full (clone + build + pip install), plus ttsim WH/BH binaries.
+#     Produces a hardware-free learning image — no /dev/tenstorrent required.
+#     Build time: 60–90 min (same as full).
+#       docker build --build-arg TT_METAL_BUILD=sim \
+#                    --build-arg TTSIM_VERSION=v1.7.0 \
+#                    -t tenstorrent/dev-n150:sim .
+#
 # Note: vLLM pip install (setup_envs.sh vllm) is skipped in checkout mode
 # because the Tenstorrent vLLM fork depends on compiled tt-metal Python
 # bindings.  In checkout mode a note is printed; run /tmp/setup_envs.sh vllm
@@ -340,6 +348,46 @@ RUN bash -c " \
 # --depth 1: only the tip of main — keeps the layer small (~10 MB).
 RUN git clone --depth 1 https://github.com/tenstorrent/tt-forge.git \
         /home/${DEV_USER}/tt-forge
+
+# ---------------------------------------------------------------------------
+# 7c. ttsim — hardware simulator binaries (sim mode only)
+# ---------------------------------------------------------------------------
+# ttsim provides a virtual Wormhole or Blackhole device that runs on x86_64
+# Linux with no Tenstorrent silicon required.
+#
+# Layout: each arch gets its own subdirectory so the .so and soc_descriptor.yaml
+# can coexist (ttsim requires both files in the same directory).
+#
+#   ~/sim/wh/libttsim_wh.so   + soc_descriptor.yaml  → Wormhole sim
+#   ~/sim/bh/libttsim_bh.so   + soc_descriptor.yaml  → Blackhole sim
+#
+# TTSIM_VERSION="latest" uses the GitHub /releases/latest/download/ redirect.
+# Any tag (e.g. "v1.7.0") uses /releases/download/<tag>/ directly.
+#
+# Known sim constraints:
+#   - Fast dispatch NOT supported: TT_METAL_SLOW_DISPATCH_MODE=1 required
+#   - SFPLOADMACRO not supported: TT_METAL_DISABLE_SFPLOADMACRO=1 required
+#   - vLLM inference will not work (needs fast dispatch)
+RUN if [ "${TT_METAL_BUILD}" = "sim" ]; then \
+      mkdir -p ~/sim/wh ~/sim/bh && \
+      if [ "${TTSIM_VERSION}" = "latest" ]; then \
+        BASE_URL="https://github.com/tenstorrent/ttsim/releases/latest/download"; \
+      else \
+        BASE_URL="https://github.com/tenstorrent/ttsim/releases/download/${TTSIM_VERSION}"; \
+      fi && \
+      echo ">>> Downloading ttsim from ${BASE_URL}" && \
+      wget -q "${BASE_URL}/libttsim_wh.so" -O ~/sim/wh/libttsim_wh.so && \
+      wget -q "${BASE_URL}/libttsim_bh.so" -O ~/sim/bh/libttsim_bh.so && \
+      echo ">>> Copying SOC descriptor YAMLs" && \
+      cp "${TT_METAL_HOME}/tt_metal/soc_descriptors/wormhole_b0_80_arch.yaml" \
+         ~/sim/wh/soc_descriptor.yaml && \
+      cp "${TT_METAL_HOME}/tt_metal/soc_descriptors/blackhole_140_arch.yaml" \
+         ~/sim/bh/soc_descriptor.yaml && \
+      echo ">>> ttsim binaries installed:" && \
+      ls -lh ~/sim/wh/ ~/sim/bh/; \
+    else \
+      echo "TT_METAL_BUILD=${TT_METAL_BUILD}: skipping ttsim download."; \
+    fi
 
 # ---------------------------------------------------------------------------
 # 8. Environment wrapper scripts (for DX convenience)
