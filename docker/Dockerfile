@@ -328,15 +328,19 @@ RUN if [ "${TT_METAL_BUILD}" = "full" ] || [ "${TT_METAL_BUILD}" = "sim" ]; then
 # tt-forge-install: post-install helper shipped in the tt-forge package.
 #   Downloads and configures the tt-metalium backend used by the forge compiler.
 #   Must be run once after pip install — safe to re-run if needed.
-# pip's backtracking resolver hits resolution-too-deep on the TT private PyPI
-# dependency graph.  uv (already installed in step 3) uses a faster resolver
-# that handles this without issue.  We use uv pip install targeting the
-# already-created venv-forge — uv respects the active venv via --python.
+# tt-forge v1.2.0 declares pjrt-plugin-tt as a direct wheel URL in its own
+# metadata.  pip's backtracking resolver chokes on this (resolution-too-deep);
+# uv refuses it entirely (URL deps must come from the caller, not transitive
+# metadata).  Fix: pre-install pjrt-plugin-tt directly so pip finds it already
+# satisfied before it ever tries to follow the URL dep.
 RUN bash -c " \
-    uv pip install --python /opt/venv-forge/bin/python \
-        tt-forge tt-forge-onnx tt-smi \
+    source /opt/venv-forge/bin/activate && \
+    pip install --upgrade pip && \
+    pip install pjrt-plugin-tt \
         --extra-index-url https://pypi.eng.aws.tenstorrent.com/ && \
-    /opt/venv-forge/bin/tt-forge-install"
+    pip install tt-forge tt-forge-onnx tt-smi \
+        --extra-index-url https://pypi.eng.aws.tenstorrent.com/ && \
+    tt-forge-install"
 # tt-forge      — TT-XLA stack: pjrt_plugin_tt, JAX 0.7.1, torch-xla
 # tt-forge-onnx — forge.compile() API for PyTorch/ONNX → TT compilation
 # tt-smi        — hardware monitor; available in all three envs for convenience
