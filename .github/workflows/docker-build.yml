@@ -166,15 +166,15 @@ jobs:
               echo 'tt-vllm checkout OK'
             "
 
-      - name: "Smoke test 6c — TT-Forge-ONNX + pjrt_plugin_tt imports"
+      - name: "Smoke test 6c — TT-Forge (pjrt_plugin_tt + jax) imports"
         run: |
           docker run --rm \
             ${{ steps.build.outputs.imageid }} \
             bash -c "
               set -e
               source /etc/profile.d/tt-env-forge.sh
-              python -c \"import forge; print('TT-Forge-ONNX (forge) OK:', forge.__name__)\"
               python -c \"import pjrt_plugin_tt; print('pjrt_plugin_tt OK:', pjrt_plugin_tt.__name__)\"
+              python -c \"import jax; print('jax OK:', jax.__version__)\"
             "
 
       - name: "Smoke test 6d — hf CLI available in venv-metal"

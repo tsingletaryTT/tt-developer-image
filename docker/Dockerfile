@@ -344,8 +344,9 @@ RUN uv pip install --python /opt/venv-forge/bin/python \
         -r /tmp/forge-requirements.txt \
         --extra-index-url https://pypi.eng.aws.tenstorrent.com/ && \
     /opt/venv-forge/bin/tt-forge-install
-# tt-forge      — TT-XLA stack: pjrt_plugin_tt, JAX 0.7.1, torch-xla
-# tt-forge-onnx — forge.compile() API for PyTorch/ONNX → TT compilation
+# tt-forge      — TT-XLA stack: pjrt_plugin_tt, JAX, torch-xla, vllm_tt
+# tt-forge-onnx — intentionally excluded: requires torch==2.7.0 which conflicts
+#                 with pjrt-plugin-tt's torch==2.10.0 requirement
 # tt-smi        — hardware monitor; available in all three envs for convenience
 
 # ---------------------------------------------------------------------------

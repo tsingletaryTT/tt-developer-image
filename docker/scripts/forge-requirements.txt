@@ -1,20 +1,29 @@
 # Forge venv requirements for tt-developer-image.
 #
-# tt-forge and its dependencies declare URL deps in their package metadata.
+# tt-forge and pjrt-plugin-tt declare URL deps in their package metadata.
 # Both pip (resolution-too-deep) and uv (URL-in-transitive-metadata policy)
 # refuse to resolve these unless they appear here as direct requirements.
 #
+# tt-forge-onnx is intentionally EXCLUDED: it requires torch==2.7.0 which
+# directly conflicts with pjrt-plugin-tt's torch==2.10.0. They cannot coexist
+# in the same venv. The primary use case of this image is the TT-XLA/JAX
+# runtime (tt-forge + pjrt-plugin-tt), not the ONNX frontend.
+# The forge/ Python module comes from tt-forge-onnx; without it, use pjrt_plugin_tt
+# and jax directly.
+#
 # How to update when tt-forge is bumped:
-#   1. Run: uv pip install --dry-run tt-forge tt-forge-onnx \
-#             --extra-index-url https://pypi.eng.aws.tenstorrent.com/ 2>&1 \
-#             | grep "URL dep"
-#   2. Add any new URL deps below with the exact URL from the error message.
+#   1. Unzip the new tt-forge wheel and read dist-info/METADATA for URL deps
+#   2. Unzip pjrt-plugin-tt and read its METADATA for URL deps
+#   3. Add all URL deps below; resolve any torch version conflicts first
 
-# tt-forge 1.2.0 transitive URL deps (must be declared here for uv to accept)
+# tt-forge 1.2.0 — URL deps (from tt_forge-1.2.0 METADATA)
 pjrt-plugin-tt @ https://pypi.eng.aws.tenstorrent.com/pjrt-plugin-tt/pjrt_plugin_tt-1.2.0-cp312-cp312-manylinux_2_34_x86_64.whl
+vllm_tt @ https://pypi.eng.aws.tenstorrent.com/vllm-tt/vllm_tt-1.2.0-cp312-cp312-linux_x86_64.whl
+
+# pjrt-plugin-tt 1.2.0 — URL deps (from pjrt_plugin_tt-1.2.0 METADATA)
 torch @ https://download.pytorch.org/whl/cpu/torch-2.10.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl
+torch-xla @ https://pypi.eng.aws.tenstorrent.com/torch-xla/torch_xla-2.9.0%2Bgit5c82b10-cp312-cp312-linux_x86_64.whl
 
 # Top-level packages
 tt-forge
-tt-forge-onnx
 tt-smi
