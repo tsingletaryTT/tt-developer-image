@@ -1,0 +1,20 @@
+# Forge venv requirements for tt-developer-image.
+#
+# tt-forge and its dependencies declare URL deps in their package metadata.
+# Both pip (resolution-too-deep) and uv (URL-in-transitive-metadata policy)
+# refuse to resolve these unless they appear here as direct requirements.
+#
+# How to update when tt-forge is bumped:
+#   1. Run: uv pip install --dry-run tt-forge tt-forge-onnx \
+#             --extra-index-url https://pypi.eng.aws.tenstorrent.com/ 2>&1 \
+#             | grep "URL dep"
+#   2. Add any new URL deps below with the exact URL from the error message.
+
+# tt-forge 1.2.0 transitive URL deps (must be declared here for uv to accept)
+pjrt-plugin-tt @ https://pypi.eng.aws.tenstorrent.com/pjrt-plugin-tt/pjrt_plugin_tt-1.2.0-cp312-cp312-manylinux_2_34_x86_64.whl
+torch @ https://download.pytorch.org/whl/cpu/torch-2.10.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl
+
+# Top-level packages
+tt-forge
+tt-forge-onnx
+tt-smi

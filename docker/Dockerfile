@@ -328,23 +328,22 @@ RUN if [ "${TT_METAL_BUILD}" = "full" ] || [ "${TT_METAL_BUILD}" = "sim" ]; then
 # tt-forge-install: post-install helper shipped in the tt-forge package.
 #   Downloads and configures the tt-metalium backend used by the forge compiler.
 #   Must be run once after pip install — safe to re-run if needed.
-# tt-forge and tt-forge-onnx declare URL deps in their own package metadata:
-#   tt-forge:      pjrt-plugin-tt @ https://pypi.eng.aws.tenstorrent.com/...
-#   tt-forge-onnx: torch @ https://download.pytorch.org/whl/cpu/torch-2.7.0...
+# tt-forge declares URL deps in its own package metadata — both pip and uv
+# refuse to follow them without the caller explicitly providing the same URLs.
+# We surface the required URLs via a requirements file so the shell layer stays
+# readable and the comment stays close to the URLs it describes.
 #
-# pip's backtracking resolver hits resolution-too-deep on these URL deps.
-# uv refuses them unless they come from the *caller*, not transitive metadata.
+# URL sources (tt-forge 1.2.0):
+#   pjrt-plugin-tt: from tt-forge metadata, pinned to TT private PyPI wheel
+#   torch:          from pjrt-plugin-tt metadata, requires 2.10.0+cpu cp312
+#   tt-forge-onnx:  re-declares torch 2.7.0 — resolved by pinning 2.10.0 here
 #
-# Fix: use uv and explicitly declare both URL deps as direct requirements.
-# uv's resolver then sees them as caller-provided and skips the URL dep policy.
-# The exact URLs are pinned to tt-forge 1.2.0; update if tt-forge is bumped.
-RUN bash -c " \
-    uv pip install --python /opt/venv-forge/bin/python \
-        'pjrt-plugin-tt @ https://pypi.eng.aws.tenstorrent.com/pjrt-plugin-tt/pjrt_plugin_tt-1.2.0-cp312-cp312-manylinux_2_34_x86_64.whl' \
-        'torch @ https://download.pytorch.org/whl/cpu/torch-2.7.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl' \
-        tt-forge tt-forge-onnx tt-smi \
+# Update these URLs when tt-forge is bumped; check: uv pip install --dry-run
+COPY scripts/forge-requirements.txt /tmp/forge-requirements.txt
+RUN uv pip install --python /opt/venv-forge/bin/python \
+        -r /tmp/forge-requirements.txt \
         --extra-index-url https://pypi.eng.aws.tenstorrent.com/ && \
-    /opt/venv-forge/bin/tt-forge-install"
+    /opt/venv-forge/bin/tt-forge-install
 # tt-forge      — TT-XLA stack: pjrt_plugin_tt, JAX 0.7.1, torch-xla
 # tt-forge-onnx — forge.compile() API for PyTorch/ONNX → TT compilation
 # tt-smi        — hardware monitor; available in all three envs for convenience
