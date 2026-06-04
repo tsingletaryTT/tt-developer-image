@@ -44,8 +44,13 @@ Three isolated virtualenvs — never mix them:
 ```
 /opt/venv-metal   Python 3.10 — tt-metal, TTNN, tt-smi, hf CLI
 /opt/venv-vllm    Python 3.10 — Tenstorrent vLLM, torch 2.5.0+cpu, hf CLI
-/opt/venv-forge   Python 3.12 — TT-Forge, TT-Forge-ONNX, pjrt_plugin_tt, JAX
+/opt/venv-forge   Python 3.12 — tt-forge, pjrt_plugin_tt, torch-xla, JAX, vllm_tt
 ```
+
+**Note on venv-forge:** `tt-forge-onnx` (the ONNX frontend) is intentionally excluded. It
+requires `torch==2.7.0` which directly conflicts with `pjrt-plugin-tt`'s `torch==2.10.0`.
+The image ships the TT-XLA runtime stack (`pjrt_plugin_tt`, `jax`, `torch-xla`); the ONNX
+frontend can be added to a separate venv if needed.
 
 Switch between them with the shell aliases (available in all build modes):
 
@@ -282,16 +287,134 @@ docker build --build-arg TT_METAL_BUILD=sim \
 
 ---
 
-## File Structure
+## Container Directory Layout
+
+What exists inside a running container and why each directory is where it is:
+
+```
+/home/dev/                          ← DEV_USER home (default: dev, UID 1000)
+│
+├── tt-metal/                       ← tt-metal cloned at pinned commit (555f240b)
+│   ├── tt_metal/                   │  All three build modes clone this.
+│   ├── models/                     │  full/sim modes compile it (~30-90 min).
+│   └── build/                      │  Only present after compilation.
+│       └── lib/                    │  LD_LIBRARY_PATH includes this.
+│
+├── tt-vllm/                        ← Tenstorrent vLLM fork, branch=dev
+│   └── ...                         │  Cloned in all modes. pip install -e .
+│                                   │  only runs in full/sim (needs compiled
+│                                   │  tt-metal Python bindings).
+│
+├── tt-forge/                       ← TT-Forge demo repo (--depth 1)
+│   └── demos/tt-xla/               │  Pre-cloned so lesson "Clone & Run" is
+│                                   │  instant. pip install -r requirements.txt
+│                                   │  still needed at runtime.
+│
+├── sim/                            ← ttsim binaries (sim mode only)
+│   ├── wh/
+│   │   ├── libttsim_wh.so          │  ttsim requires .so and soc_descriptor.yaml
+│   │   └── soc_descriptor.yaml     │  to share the same directory — hence per-arch
+│   └── bh/                        │  subdirectories instead of a flat layout.
+│       ├── libttsim_bh.so
+│       └── soc_descriptor.yaml
+│
+├── models/                         ← Model weights land here (hf download)
+│   └── (empty until populated)     │  Not pre-populated — too large to bundle.
+│
+└── tt-scratchpad/                  ← Extension-generated scripts
+    └── README.md
+
+/opt/
+├── venv-metal/                     ← Python 3.10 venv
+│   └── lib/python3.10/             │  tt-metal (editable), TTNN, tt-smi, hf CLI
+│                                   │  TTNN import only works after compilation.
+├── venv-vllm/                      ← Python 3.10 venv
+│   └── lib/python3.10/             │  vLLM (editable), torch 2.5.0+cpu, hf CLI
+│                                   │  vLLM import only works after compilation.
+└── venv-forge/                     ← Python 3.12 venv
+    └── lib/python3.12/             │  tt-forge, pjrt_plugin_tt, torch 2.10.0+cpu,
+                                    │  torch-xla 2.9.0, JAX 0.7.1, vllm_tt
+                                    │  Always fully installed (no compilation needed).
+
+/etc/profile.d/
+├── tt-env-metal.sh                 ← source to activate venv-metal + set TT vars
+├── tt-env-vllm.sh                  ← source to activate venv-vllm + set TT vars
+├── tt-env-forge.sh                 ← source to activate venv-forge + set TT vars
+└── tt-env-sim.sh                   ← source to activate venv-metal + ttsim vars
+                                       (sim mode only; sets SIMULATOR_MODE=1,
+                                        TT_METAL_SIMULATOR, SLOW_DISPATCH, etc.)
+
+/tmp/                               ← Build helper scripts (always present)
+├── build_tt_metal.sh               ← Compiles tt-metal from ~/tt-metal source
+│                                      Run manually in checkout mode to compile.
+├── setup_envs.sh                   ← Sets up venv-vllm or venv-forge
+│                                      Usage: bash /tmp/setup_envs.sh vllm
+└── forge-requirements.txt          ← URL-dep manifest for venv-forge install
+                                       (already consumed during image build)
+```
+
+---
+
+## What's Left to Compile After Entering
+
+In `checkout` mode the image ships with all source trees present but nothing compiled. Here is exactly what each stack needs and how to trigger it:
+
+### tt-metal + TTNN (venv-metal)
+
+```bash
+# Compile tt-metal C++ and install Python bindings into venv-metal
+bash /tmp/build_tt_metal.sh
+
+# Verify
+tt-metal
+python -c "import ttnn; print(ttnn.__version__)"
+```
+
+Takes 30–90 min. Requires a host with the TT kernel driver and at least 50 GB disk.
+
+### vLLM (venv-vllm)
+
+Must be done **after** `build_tt_metal.sh` — the TT vLLM fork links against compiled tt-metal Python extensions.
+
+```bash
+bash /tmp/setup_envs.sh vllm
+
+# Verify
+tt-vllm
+python -c "import vllm; print(vllm.__version__)"
+```
+
+### TT-Forge (venv-forge)
+
+Already fully installed at image build time — no compilation step needed. `tt-forge-install` was run during the build and downloaded the tt-metalium backend native libraries.
+
+```bash
+# Verify immediately (no build step)
+tt-forge
+python -c "import pjrt_plugin_tt; import jax; print('JAX', jax.__version__)"
+```
+
+### Model weights
+
+```bash
+tt-metal   # or tt-vllm, depending on the lesson
+hf auth login --token "$HF_TOKEN"
+hf download Qwen/Qwen3-0.6B --local-dir ~/models/Qwen3-0.6B
+```
+
+---
+
+## Repo File Structure
 
 ```
 docker/
-  Dockerfile              Main image definition
-  README.md               Technical reference (build args, quick starts, notes)
+  Dockerfile                  Main image definition (all three build modes)
+  README.md                   Technical reference (build args, quick starts)
   scripts/
-    build_tt_metal.sh     Invoked in full/sim modes to compile tt-metal
-    setup_envs.sh         Sets up venv-vllm and venv-forge
-    test_sim_mode.sh      Smoke test — run inside a sim image to verify wiring
+    build_tt_metal.sh         Compiles tt-metal; also copied to /tmp/ in image
+    setup_envs.sh             Sets up venv-vllm and venv-forge; also in /tmp/
+    forge-requirements.txt    URL-dep manifest for uv install of tt-forge stack
+    test_sim_mode.sh          Smoke test — mount and run inside a sim container
 
 docs/superpowers/
   specs/2026-06-01-tt-sim-image-design.md   Design doc for sim mode
