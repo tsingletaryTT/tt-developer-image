@@ -190,7 +190,14 @@ RUN /opt/venv-metal/bin/pip install --upgrade pip && \
 # --python-choice=active-venv: installs tt-smi and tt-flash into the already-activated
 #   venv-metal (VIRTUAL_ENV must be set, which `source .../activate` does).
 # --update-firmware=off: skip firmware flashing — no hardware present during image build.
-# --no-install-metalium-container/forge: skip OCI image pulls (Docker-in-Docker).
+# --no-install-metalium-container: the metalium container is ghcr.io/tenstorrent/
+#   tt-metal/tt-metalium-ubuntu-22.04-release-amd64 — a pre-built Docker image for
+#   users who don't want to compile tt-metal themselves.  We don't need it because
+#   we build tt-metal from source into venv-metal, which is the same thing natively.
+#   Pulling it here would require Docker-in-Docker and add a redundant multi-GB layer.
+# --no-install-forge-container: same reasoning — the forge container is
+#   ghcr.io/tenstorrent/tt-xla-slim, which tt-installer would pull and wrap with a
+#   shell script.  We install the forge stack natively into venv-forge instead.
 # --no-install-inference-server/studio: skip git clone steps not needed in this image.
 #
 # Side-effect: tt-installer also adds the Tenstorrent apt PPA (ppa.tenstorrent.com),
