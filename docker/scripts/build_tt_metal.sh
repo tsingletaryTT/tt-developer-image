@@ -11,7 +11,9 @@
 set -euo pipefail
 
 TT_METAL_HOME=${TT_METAL_HOME:-"$HOME/tt-metal"}
-VENV_METAL=/opt/venv-metal
+# Allow callers to override the venv path — Dockerfile.qb2 sets this to
+# ~/tt-metal/python_env/ to match the QB2 post-tt-installer layout.
+VENV_METAL=${VENV_METAL:-/opt/venv-metal}
 
 echo ">>> Building tt-metal from source at $TT_METAL_HOME"
 cd "$TT_METAL_HOME"

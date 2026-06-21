@@ -35,6 +35,15 @@ Developer-centric Docker image for Tenstorrent hardware that supports both
      Required to dispatch real ops to hardware.
      Build time: 30–90 min (needs large-disk host).
 
+## Two Dockerfiles
+
+| File | Purpose |
+|---|---|
+| `Dockerfile` | General-purpose dev image; `/opt/venv-*` paths; `dev` user; code-server included |
+| `Dockerfile.qb2` | Exact QB2 post-tt-installer environment; `~/tt-metal/python_env/` paths; `ttuser`; no code-server |
+
+Use `Dockerfile.qb2` when you need QB2-identical paths — VHS terminal recording, testing scripts written for real QB2 users, or validating the QB2 guide content.
+
 ## Quick Start
 
 ### Wormhole (N150 / N300 / T3K)
@@ -53,8 +62,7 @@ docker run -it \
 
 ### Blackhole / QB2 (P100 / P150 / P300c)
 
-Pass `TT_METAL_ARCH_NAME=blackhole` at `docker run`.  Every env script reads this
-and exports it, so all three venvs get the correct arch automatically.
+**For general dev work** — pass `TT_METAL_ARCH_NAME=blackhole` to `Dockerfile`:
 
 ```bash
 docker run -it \
@@ -64,16 +72,24 @@ docker run -it \
   tenstorrent/dev:latest bash
 ```
 
-For a QuietBox 2 with four P300c cards:
+**For QB2-exact environment** (VHS recordings, guide content, QB2-path testing) — use `Dockerfile.qb2`:
 
 ```bash
+# Build
+cd docker
+docker build -f Dockerfile.qb2 -t tenstorrent/qb2-env:latest .
+
+# Run with hardware access
 docker run -it \
   --device /dev/tenstorrent \
   -v /dev/hugepages-1G:/dev/hugepages-1G \
-  -e TT_METAL_ARCH_NAME=blackhole \
-  -e MESH_DEVICE=P100 \
-  tenstorrent/dev:latest bash
+  tenstorrent/qb2-env:latest bash
+
+# Run without hardware (path / alias verification only)
+docker run -it tenstorrent/qb2-env:latest bash
 ```
+
+`Dockerfile.qb2` hard-codes `TT_METAL_ARCH_NAME=blackhole` in `.bashrc` — no `-e` flag needed.
 
 ### Simulator (no hardware required)
 

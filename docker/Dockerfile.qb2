@@ -1,0 +1,281 @@
+# Dockerfile.qb2
+#
+# Reproduces the environment of a TT-QuietBox 2 immediately after first boot
+# post-tt-installer: user ttuser, Ubuntu 24.04, Blackhole architecture, venvs
+# at the paths tt-installer creates, tt-inference-server pre-cloned, tt-toplike
+# installed via apt.
+#
+# The purpose of this image is VHS terminal recording for the QB2 Guide and
+# local development / testing that needs to mirror the QB2 user experience
+# exactly.  It is not a general-purpose developer image — use Dockerfile for
+# that.
+#
+# Hardware access (for recordings that show real chip output):
+#   docker run -it --device /dev/tenstorrent \
+#     -v /dev/hugepages-1G:/dev/hugepages-1G \
+#     tenstorrent/qb2-env:latest bash
+#
+# No hardware (dry-run / path/alias verification only):
+#   docker run -it tenstorrent/qb2-env:latest bash
+#
+# Build:
+#   cd docker
+#   docker build -f Dockerfile.qb2 -t tenstorrent/qb2-env:latest .
+#
+# Build modes (TT_METAL_BUILD build arg) — same semantics as Dockerfile:
+#   checkout  (default)  clone only; cannot run TTNN ops
+#   full                 clone + compile; required for real chip recordings
+#
+# QB2 path layout reproduced here:
+#   ~/tt-metal/                         tt-metal source tree
+#   ~/tt-metal/python_env/              venv-metal  (TTNN, tt-smi, hf)
+#   ~/tt-metal/build/python_env_vllm/   venv-vllm   (TT vLLM fork)
+#   ~/tt-forge-venv/                    venv-forge  (TT-Forge / TT-XLA)
+#   ~/models/                           model storage (pre-created, empty)
+#   ~/tt-scratchpad/                    scratch space
+#   ~/.local/lib/tt-inference-server/   tt-inference-server clone
+#   ~/.local/bin/tt-smi                 symlink → venv-metal tt-smi
+#   ~/.local/bin/hf                     symlink → venv-metal hf
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ---------------------------------------------------------------------------
+# 1. Base OS + system dependencies (same as Dockerfile)
+# ---------------------------------------------------------------------------
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+ && add-apt-repository -y ppa:deadsnakes/ppa \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash ca-certificates curl wget git sudo apt-transport-https gnupg lsb-release \
+    build-essential ninja-build cmake pkg-config \
+    python3.10 python3.10-venv python3.10-dev \
+    python3.12-venv python3.12-dev \
+    python3-pip \
+    clang-17 clang++-17 \
+    protobuf-compiler libprotobuf-dev \
+    libnuma-dev libhwloc-dev libboost-all-dev libnsl-dev \
+    libncurses6 \
+    cpufrequtils linux-tools-common linux-tools-generic \
+    iproute2 iputils-ping \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN ln -sf /usr/bin/clang-17 /usr/local/bin/clang && \
+    ln -sf /usr/bin/clang++-17 /usr/local/bin/clang++
+
+# ---------------------------------------------------------------------------
+# 2. Create ttuser (mirrors the QB2 default account)
+# ---------------------------------------------------------------------------
+# QB2 ships with a non-root user named 'ttuser'.  We match UID/GID 1000 to
+# keep bind-mount permissions aligned with the host QB2 user.
+
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    groupdel ubuntu 2>/dev/null || true && \
+    groupadd -g 1000 ttuser && \
+    useradd -m -u 1000 -g 1000 -s /bin/bash ttuser && \
+    usermod -aG sudo ttuser && \
+    echo "ttuser ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-ttuser
+
+USER ttuser
+WORKDIR /home/ttuser
+
+ENV PATH="/home/ttuser/.local/bin:/home/ttuser/.cargo/bin:${PATH}"
+
+# ---------------------------------------------------------------------------
+# 3. uv + Rust (same as Dockerfile — used by tt-metal tooling)
+# ---------------------------------------------------------------------------
+
+RUN curl -fsSL https://astral.sh/uv/install.sh | bash && \
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y && \
+    echo 'source "$HOME/.cargo/env"' >> ~/.bashrc
+
+# ---------------------------------------------------------------------------
+# 4. Clone tt-metal at pinned commit
+# ---------------------------------------------------------------------------
+# tt-metal must be cloned first because the venv paths live inside ~/tt-metal/
+# and the build script expects the source tree at TT_METAL_HOME.
+
+ARG TT_METAL_REPO=https://github.com/tenstorrent/tt-metal.git
+ARG TT_METAL_COMMIT=555f240b7dbfadd6634e958faedb516bfaf6f9c4
+
+RUN git clone --recurse-submodules ${TT_METAL_REPO} /home/ttuser/tt-metal && \
+    cd /home/ttuser/tt-metal && \
+    git checkout ${TT_METAL_COMMIT} && \
+    git submodule update --init --recursive
+
+ENV TT_METAL_HOME=/home/ttuser/tt-metal
+
+# ---------------------------------------------------------------------------
+# 5. Python virtualenvs at QB2 paths
+# ---------------------------------------------------------------------------
+# tt-installer on a real QB2 creates these three venvs.  We reproduce the
+# exact paths so every script, alias, and VHS tape works without modification.
+#
+#   ~/tt-metal/python_env/              Python 3.10 — TTNN, tt-smi, hf CLI
+#   ~/tt-metal/build/python_env_vllm/   Python 3.10 — Tenstorrent vLLM fork
+#   ~/tt-forge-venv/                    Python 3.12 — TT-Forge / TT-XLA
+#
+# Note: ~/tt-metal/build/ is created here explicitly because the full build
+# (build_tt_metal.sh) would create it as a side-effect, but in checkout mode
+# it doesn't run, so we create the directory unconditionally.
+
+RUN mkdir -p /home/ttuser/tt-metal/build && \
+    python3.10 -m venv /home/ttuser/tt-metal/python_env && \
+    python3.10 -m venv /home/ttuser/tt-metal/build/python_env_vllm && \
+    python3.12 -m venv /home/ttuser/tt-forge-venv
+
+RUN /home/ttuser/tt-metal/python_env/bin/pip install --upgrade pip && \
+    /home/ttuser/tt-metal/build/python_env_vllm/bin/pip install --upgrade pip && \
+    /home/ttuser/tt-forge-venv/bin/pip install --upgrade pip
+
+# ---------------------------------------------------------------------------
+# 6. tt-installer (container mode) — installs tt-smi, hf, tenstorrent PPA
+# ---------------------------------------------------------------------------
+# Run tt-installer with --mode-container so it populates venv-metal with
+# tt-smi and hf CLI (same packages tt-installer puts there on a real QB2)
+# and adds the Tenstorrent apt PPA (needed for tt-toplike in step 7).
+#
+# VENV_METAL override makes tt-installer target ~/tt-metal/python_env/
+# instead of its own default path.
+
+RUN bash -c " \
+    source /home/ttuser/tt-metal/python_env/bin/activate && \
+    curl -fsSLO https://github.com/tenstorrent/tt-installer/releases/latest/download/install.sh && \
+    chmod +x install.sh && \
+    ./install.sh \
+      --mode-container \
+      --mode-non-interactive \
+      --python-choice=active-venv \
+      --no-install-metalium-container \
+      --no-install-forge-container \
+      --no-install-inference-server \
+      --no-install-studio \
+      --update-firmware=off && \
+    rm -f install.sh"
+
+# huggingface-hub in both metal and vllm venvs (tt-installer only covered metal)
+RUN /home/ttuser/tt-metal/python_env/bin/pip install --quiet huggingface-hub && \
+    /home/ttuser/tt-metal/build/python_env_vllm/bin/pip install --quiet huggingface-hub tt-smi
+
+# ---------------------------------------------------------------------------
+# 7. tt-toplike via apt
+# ---------------------------------------------------------------------------
+# On a real QB2, tt-installer adds the Tenstorrent apt PPA.  tt-toplike is
+# then installed with: sudo apt install tt-toplike
+# The tt-installer --mode-container run above added the PPA, so apt knows
+# about the package.  We pre-install it here as the QB2 ships with it.
+
+RUN sudo apt-get update && \
+    sudo apt-get install -y tt-toplike && \
+    sudo rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# 8. tt-metal compile (full build mode only)
+# ---------------------------------------------------------------------------
+
+ARG TT_METAL_BUILD=checkout
+
+COPY scripts/build_tt_metal.sh /tmp/build_tt_metal.sh
+
+RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
+      cd ${TT_METAL_HOME} && sudo ./install_dependencies.sh || true; \
+    else \
+      echo "TT_METAL_BUILD=${TT_METAL_BUILD}: skipping install_dependencies.sh"; \
+    fi
+
+# Pass QB2 venv path via VENV_METAL so build_tt_metal.sh targets the right venv
+RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
+      VENV_METAL=/home/ttuser/tt-metal/python_env bash /tmp/build_tt_metal.sh; \
+    else \
+      echo "TT_METAL_BUILD=${TT_METAL_BUILD}: skipping tt-metal compilation."; \
+      echo "To build inside the container: VENV_METAL=~/tt-metal/python_env bash /tmp/build_tt_metal.sh"; \
+    fi
+
+# ---------------------------------------------------------------------------
+# 9. vLLM env
+# ---------------------------------------------------------------------------
+
+ARG VLLM_REPO=https://github.com/tenstorrent/vllm.git
+ARG VLLM_BRANCH=dev
+
+RUN git clone ${VLLM_REPO} /home/ttuser/tt-vllm && \
+    cd /home/ttuser/tt-vllm && \
+    git checkout ${VLLM_BRANCH}
+
+COPY scripts/setup_envs.sh /tmp/setup_envs.sh
+
+RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
+      VENV_VLLM=/home/ttuser/tt-metal/build/python_env_vllm bash /tmp/setup_envs.sh vllm; \
+    else \
+      echo "TT_METAL_BUILD=${TT_METAL_BUILD}: skipping vLLM pip install."; \
+      echo "Run: VENV_VLLM=~/tt-metal/build/python_env_vllm bash /tmp/setup_envs.sh vllm"; \
+    fi
+
+# ---------------------------------------------------------------------------
+# 10. Forge env
+# ---------------------------------------------------------------------------
+
+COPY scripts/forge-requirements.txt /tmp/forge-requirements.txt
+
+RUN uv pip install --python /home/ttuser/tt-forge-venv/bin/python \
+        -r /tmp/forge-requirements.txt \
+        --extra-index-url https://pypi.eng.aws.tenstorrent.com/ && \
+    /home/ttuser/tt-forge-venv/bin/tt-forge-install
+
+# ---------------------------------------------------------------------------
+# 11. tt-inference-server — pre-cloned at the QB2 pre-installed path
+# ---------------------------------------------------------------------------
+# On a real QB2, tt-installer clones tt-inference-server to
+# ~/.local/lib/tt-inference-server/.  We reproduce that here.
+
+ARG TT_INFERENCE_SERVER_REPO=https://github.com/tenstorrent/tt-inference-server.git
+
+RUN mkdir -p /home/ttuser/.local/lib && \
+    git clone ${TT_INFERENCE_SERVER_REPO} /home/ttuser/.local/lib/tt-inference-server
+
+# ---------------------------------------------------------------------------
+# 12. Directory layout + PATH wrappers
+# ---------------------------------------------------------------------------
+# Reproduce exactly what a first-boot QB2 has:
+#   ~/models/                     empty, waiting for hf download
+#   ~/tt-scratchpad/              scratch space
+#   ~/.local/bin/tt-smi           on PATH — points into venv-metal
+#   ~/.local/bin/hf               on PATH — points into venv-metal
+
+RUN mkdir -p /home/ttuser/models && \
+    mkdir -p /home/ttuser/tt-scratchpad && \
+    printf '# tt-scratchpad\n# Scripts and experiments go here.\n' \
+      > /home/ttuser/tt-scratchpad/README.md && \
+    mkdir -p /home/ttuser/.local/bin && \
+    ln -s /home/ttuser/tt-metal/python_env/bin/tt-smi \
+          /home/ttuser/.local/bin/tt-smi && \
+    ln -s /home/ttuser/tt-metal/python_env/bin/hf \
+          /home/ttuser/.local/bin/hf
+
+# ---------------------------------------------------------------------------
+# 13. Shell environment — matches post-tt-installer QB2 bashrc
+# ---------------------------------------------------------------------------
+# On a real QB2, tt-installer does NOT add aliases or env switchers.  Users
+# activate venvs by sourcing the full paths.  TT_METAL_ARCH_NAME=blackhole is
+# the only persistent environment variable set (the QB2 firmware detects
+# Blackhole chips; tt-installer writes this to the system profile).
+
+RUN printf '\n# Set by tt-installer on first boot (Blackhole / QB2)\nexport TT_METAL_ARCH_NAME=blackhole\n' \
+      >> /home/ttuser/.bashrc && \
+    printf '\n# Tenstorrent PATH (tt-installer)\nexport PATH="$HOME/.local/bin:$PATH"\n' \
+      >> /home/ttuser/.bashrc
+
+# ---------------------------------------------------------------------------
+# 14. Final touches
+# ---------------------------------------------------------------------------
+
+WORKDIR /home/ttuser
+ENV DEBIAN_FRONTEND=dialog
+
+CMD ["/bin/bash"]

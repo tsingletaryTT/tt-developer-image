@@ -27,7 +27,9 @@ fi
 # vLLM env: torch 2.5.0+cpu + Tenstorrent vLLM fork
 # ---------------------------------------------------------------------------
 if [[ "$TARGET" == "vllm" ]]; then
-  VENV=/opt/venv-vllm
+  # Allow callers to override — Dockerfile.qb2 sets this to
+  # ~/tt-metal/build/python_env_vllm/ to match the QB2 layout.
+  VENV=${VENV_VLLM:-/opt/venv-vllm}
   echo ">>> Configuring vLLM env at $VENV"
 
   source "${VENV}/bin/activate"
@@ -85,7 +87,9 @@ EOF
 # For a developer image where forge should be a native Python environment,
 # the pip install approach is the right choice.
 elif [[ "$TARGET" == "forge" ]]; then
-  VENV=/opt/venv-forge
+  # Allow callers to override — Dockerfile.qb2 sets this to ~/tt-forge-venv/
+  # to match the QB2 post-tt-installer layout.
+  VENV=${VENV_FORGE:-/opt/venv-forge}
 
   echo ">>> Configuring Forge env at $VENV (Python 3.12)"
   echo ">>> Installing tt-forge from Tenstorrent private PyPI"
