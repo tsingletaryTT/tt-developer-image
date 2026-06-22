@@ -167,13 +167,22 @@ RUN /home/ttuser/tt-metal/python_env/bin/pip install --quiet huggingface-hub && 
 # 7. tt-toplike via apt
 # ---------------------------------------------------------------------------
 # On a real QB2, tt-installer adds the Tenstorrent apt PPA.  tt-toplike is
-# then installed with: sudo apt install tt-toplike
-# The tt-installer --mode-container run above added the PPA, so apt knows
-# about the package.  We pre-install it here as the QB2 ships with it.
+# then installed with: sudo apt install tt-toplike.
+# The --mode-container installer run above adds the PPA; we try to install
+# tt-toplike from it.  If the package is not yet published (nightly builds,
+# pre-release images) we fall through silently — everything else still works.
 
 RUN sudo apt-get update && \
-    sudo apt-get install -y tt-toplike && \
+    (sudo apt-get install -y tt-toplike || echo "tt-toplike not yet in PPA, skipping") && \
     sudo rm -rf /var/lib/apt/lists/*
+
+# Cargo fallback: if apt skipped tt-toplike, install via cargo.
+# This matches the alternative install path documented in the guide.
+RUN if ! command -v tt-toplike >/dev/null 2>&1; then \
+      source "$HOME/.cargo/env" && \
+      cargo install tt-toplike --locked 2>/dev/null || \
+      echo "tt-toplike cargo install skipped (network/build issue)"; \
+    fi
 
 # ---------------------------------------------------------------------------
 # 8. tt-metal compile (full build mode only)
