@@ -164,25 +164,28 @@ RUN /home/ttuser/tt-metal/python_env/bin/pip install --quiet huggingface-hub && 
     /home/ttuser/tt-metal/build/python_env_vllm/bin/pip install --quiet huggingface-hub tt-smi
 
 # ---------------------------------------------------------------------------
-# 7. tt-toplike via apt
+# 7. tt-toplike — installed from locally-built .deb packages
 # ---------------------------------------------------------------------------
-# On a real QB2, tt-installer adds the Tenstorrent apt PPA.  tt-toplike is
-# then installed with: sudo apt install tt-toplike.
-# The --mode-container installer run above adds the PPA; we try to install
-# tt-toplike from it.  If the package is not yet published (nightly builds,
-# pre-release images) we fall through silently — everything else still works.
+# tt-toplike is NOT distributed via an apt PPA; it ships as .deb packages that
+# are installed manually with `dpkg -i` — the same flow used on a real QB2.
+# Build them from the tt-toplike repo (`./build-deb.sh`) and drop the resulting
+# tt-toplike_*.deb and tt-toplike-app_*.deb into docker/debs/ before building
+# this image (see docker/debs/README.md). If none are present we fall back to
+# `cargo install` so the build still succeeds, but the .deb is the intended
+# path (it installs the exact packaged binaries, not a crates.io build).
 
-RUN sudo apt-get update && \
-    (sudo apt-get install -y tt-toplike || echo "tt-toplike not yet in PPA, skipping") && \
-    sudo rm -rf /var/lib/apt/lists/*
-
-# Cargo fallback: if apt skipped tt-toplike, install via cargo.
-# This matches the alternative install path documented in the guide.
-RUN if ! command -v tt-toplike >/dev/null 2>&1; then \
+COPY debs/ /tmp/tt-debs/
+RUN if ls /tmp/tt-debs/*.deb >/dev/null 2>&1; then \
+      echo "Installing tt-toplike from local .deb packages:" && \
+      ls -1 /tmp/tt-debs/*.deb && \
+      (sudo dpkg -i /tmp/tt-debs/*.deb || sudo apt-get install -f -y); \
+    else \
+      echo "No .deb in docker/debs/ — falling back to 'cargo install tt-toplike'" && \
       source "$HOME/.cargo/env" && \
       cargo install tt-toplike --locked 2>/dev/null || \
       echo "tt-toplike cargo install skipped (network/build issue)"; \
-    fi
+    fi && \
+    sudo rm -rf /tmp/tt-debs /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
 # 8. tt-metal compile (full build mode only)

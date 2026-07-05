@@ -34,3 +34,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Locally-built tt-toplike .deb packages (dropped in for Dockerfile.qb2 step 7)
+docker/debs/*.deb
