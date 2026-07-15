@@ -488,3 +488,20 @@ This should give you a solid starting “fat dev” image:
 - vLLM + torch stack aligned with production-like versions.
 - Forge/XLA stack isolated but ready to go.
 - Lots of comments so your team can evolve it as the TT stack moves.
+
+## Session log
+
+### 2026-07-15 — Golden QB2 image + CI (sub-project A)
+Prompt: use the "Install Tenstorrent Stack" GitHub Action + latest golden
+installer path for QB2-image testing.
+- Pinned `Dockerfile.qb2` step 6 to `install.sh --versions=release` (golden).
+- Added `.github/workflows/qb2-image.yml`: self-hosted `[self-hosted,tenstorrent]`
+  runner on the QuietBox, fully container-isolated (host never mutated; cards via
+  `--device` passthrough). Jobs: golden-stack (action, container mode, `.ttis`
+  artifact), build-qb2 (checkout + `qb2_smoke.sh`), inference (on-demand full build).
+- Added reusable `docker/scripts/qb2_smoke.sh`.
+- Decisions: track latest golden release (no version pin); no registry push (no
+  storage); no `pull_request` trigger (no fork code on hardware).
+- Sub-project B (Claude skill to dispatch arbitrary projects into the image for
+  clean-install + inference) is deferred to its own spec.
+Spec: `docs/superpowers/specs/2026-07-15-golden-qb2-image-ci-design.md`.

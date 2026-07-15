@@ -500,6 +500,39 @@ docker push ghcr.io/tsingletary/tt-developer-image:sim-bh
 
 To make public: GitHub → your profile → Packages → `tt-developer-image` → Package settings → Change visibility → Public.
 
+### QB2 image CI (self-hosted, container-isolated)
+
+`.github/workflows/qb2-image.yml` tests `Dockerfile.qb2` on a real QuietBox 2
+registered as a self-hosted GitHub Actions runner. **Every step runs in Docker —
+the host TT install is never modified**; cards reach CI only via
+`--device /dev/tenstorrent` passthrough.
+
+Jobs:
+- **golden-stack** — runs the [Install Tenstorrent Stack](https://github.com/marketplace/actions/install-tenstorrent-stack)
+  action (`channel: release`, `mode: container`) in a throwaway container and
+  publishes the resolved `.ttis` version set as an artifact.
+- **build-qb2** — builds the image in checkout mode and runs
+  `docker/scripts/qb2_smoke.sh` (paths, venvs, `tt-smi`/`hf` symlinks, arch var,
+  source trees). Runs on every push to `main`.
+- **inference** — on-demand only (`workflow_dispatch` → `run_inference: true`):
+  full build (30–90 min) then a real TTNN op against the cards via passthrough.
+
+**One-time runner registration** (on the QB2):
+
+```bash
+# Repo → Settings → Actions → Runners → New self-hosted runner (Linux x64)
+# copy the registration TOKEN, then:
+mkdir -p ~/actions-runner && cd ~/actions-runner
+curl -o actions-runner.tar.gz -L \
+  https://github.com/actions/runner/releases/latest/download/actions-runner-linux-x64.tar.gz
+tar xzf actions-runner.tar.gz
+./config.sh --url https://github.com/tsingletaryTT/tt-developer-image \
+  --token <TOKEN> --labels self-hosted,tenstorrent --unattended
+sudo ./svc.sh install && sudo ./svc.sh start   # run as a service
+```
+
+The runner user must be in the `docker` group (already true on this QB2).
+
 ### GHCR tag convention
 
 | Tag | Description |
