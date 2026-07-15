@@ -51,7 +51,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl wget git sudo apt-transport-https gnupg lsb-release \
+    bash ca-certificates curl wget git sudo apt-transport-https gnupg lsb-release jq \
     build-essential ninja-build cmake pkg-config \
     python3.10 python3.10-venv python3.10-dev \
     python3.12-venv python3.12-dev \
