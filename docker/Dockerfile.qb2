@@ -135,20 +135,25 @@ RUN /home/ttuser/tt-metal/python_env/bin/pip install --upgrade pip && \
     /home/ttuser/tt-forge-venv/bin/pip install --upgrade pip
 
 # ---------------------------------------------------------------------------
-# 6. tt-installer (container mode) — installs tt-smi, hf, tenstorrent PPA
+# 6. tt-installer (container mode, golden "release" channel)
 # ---------------------------------------------------------------------------
 # Run tt-installer with --mode-container so it populates venv-metal with
 # tt-smi and hf CLI (same packages tt-installer puts there on a real QB2)
 # and adds the Tenstorrent apt PPA (needed for tt-toplike in step 7).
 #
-# VENV_METAL override makes tt-installer target ~/tt-metal/python_env/
-# instead of its own default path.
+# --versions=release pins the *golden* baseline: the tested version set baked
+# into each tt-installer release. CI (.github/workflows/qb2-image.yml) validates
+# this same channel independently via the tenstorrent/tt-installer action.
+#
+# Activating the venv before running makes --python-choice=active-venv target
+# ~/tt-metal/python_env/ instead of tt-installer's own default path.
 
 RUN bash -c " \
     source /home/ttuser/tt-metal/python_env/bin/activate && \
     curl -fsSLO https://github.com/tenstorrent/tt-installer/releases/latest/download/install.sh && \
     chmod +x install.sh && \
     ./install.sh \
+      --versions=release \
       --mode-container \
       --mode-non-interactive \
       --python-choice=active-venv \
