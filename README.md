@@ -187,6 +187,8 @@ python -c "import ttnn; print('TTNN ready')"
 
 ### Real hardware (Blackhole / QB2)
 
+**General dev work** — pass `TT_METAL_ARCH_NAME=blackhole` to the main image:
+
 ```bash
 docker run -it \
   --device /dev/tenstorrent \
@@ -194,6 +196,27 @@ docker run -it \
   -e TT_METAL_ARCH_NAME=blackhole \
   tenstorrent/dev:latest bash
 ```
+
+**QB2-exact environment** — use `Dockerfile.qb2` when you need paths that match a real QB2
+post-tt-installer (VHS recordings, guide content, script validation):
+
+```bash
+cd docker
+docker build -f Dockerfile.qb2 -t tenstorrent/qb2-env:latest .
+
+# With hardware
+docker run -it \
+  --device /dev/tenstorrent \
+  -v /dev/hugepages-1G:/dev/hugepages-1G \
+  tenstorrent/qb2-env:latest bash
+
+# Without hardware (path / alias verification only)
+docker run -it tenstorrent/qb2-env:latest bash
+```
+
+`Dockerfile.qb2` uses `ttuser` (UID 1000), QB2 venv paths (`~/tt-metal/python_env/`, etc.),
+bakes `TT_METAL_ARCH_NAME=blackhole` into `.bashrc`, and pre-clones `tt-inference-server`.
+See [`docker/README.md`](docker/README.md) for the full two-Dockerfile comparison.
 
 ### Simulator (no hardware)
 
@@ -408,11 +431,12 @@ hf download Qwen/Qwen3-0.6B --local-dir ~/models/Qwen3-0.6B
 
 ```
 docker/
-  Dockerfile                  Main image definition (all three build modes)
-  README.md                   Technical reference (build args, quick starts)
+  Dockerfile                  Main image definition (all three build modes; dev user; /opt/venv-* paths)
+  Dockerfile.qb2              QB2-exact image — ttuser, QB2 venv paths, blackhole arch, tt-inference-server pre-cloned
+  README.md                   Technical reference (build args, quick starts, two-Dockerfile guide)
   scripts/
-    build_tt_metal.sh         Compiles tt-metal; also copied to /tmp/ in image
-    setup_envs.sh             Sets up venv-vllm and venv-forge; also in /tmp/
+    build_tt_metal.sh         Compiles tt-metal; also copied to /tmp/ in image (path-overridable via VENV_METAL)
+    setup_envs.sh             Sets up venv-vllm and venv-forge; also in /tmp/ (paths overridable via VENV_VLLM/VENV_FORGE)
     forge-requirements.txt    URL-dep manifest for uv install of tt-forge stack
     test_sim_mode.sh          Smoke test — mount and run inside a sim container
 

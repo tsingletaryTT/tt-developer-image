@@ -227,6 +227,12 @@ docker build \
 - **Forge packages** — `tt_forge_onnx` is fetched from public GitHub Releases;
   `pjrt_plugin_tt` (TT-XLA PJRT backend) comes from `ghcr.io/tenstorrent/tt-xla-slim`
   via a multi-stage build.  No internal Tenstorrent network access needed.
+- **tt-toplike in `Dockerfile.qb2`** — installed first from the Tenstorrent apt PPA
+  (added by `tt-installer --mode-container`).  If the package is absent from the PPA
+  (nightly/pre-release builds), the build falls through silently and retries via
+  `cargo install tt-toplike --locked`.  If both paths fail the image still builds
+  successfully — everything except `tt-toplike` remains functional.  This mirrors
+  the alternative install path documented in the QB2 guide.
 
 ## Publishing to GHCR (manual)
 
