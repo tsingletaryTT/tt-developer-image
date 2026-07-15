@@ -1,0 +1,15 @@
+# actionlint configuration.
+#
+# actionlint has no way to know about custom self-hosted runner labels at
+# lint time (they're only known to GitHub Actions at runtime), so it flags
+# any runs-on label it doesn't recognize as an "unknown label" error. The
+# QB2 image CI workflow (.github/workflows/qb2-image.yml) intentionally
+# targets our self-hosted QuietBox 2 runner via runs-on: [self-hosted,
+# tenstorrent] — this is not a typo, it's the runner registered per
+# Task 5. Declaring it here silences the false positive without touching
+# the workflow's actual runs-on labels.
+#
+# See: https://github.com/rhysd/actionlint/blob/main/docs/config.md
+self-hosted-runner:
+  labels:
+    - tenstorrent

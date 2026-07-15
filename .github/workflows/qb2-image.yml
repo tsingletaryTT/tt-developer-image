@@ -1,0 +1,111 @@
+# .github/workflows/qb2-image.yml
+#
+# CI for the QB2-exact image (docker/Dockerfile.qb2). Runs on the QuietBox 2
+# itself, registered as a self-hosted runner labelled [self-hosted, tenstorrent].
+#
+# HOST SAFETY: every step runs inside Docker. The host's KMD / firmware /
+# HugePages / system packages are NEVER modified. Real cards reach CI only via
+# --device /dev/tenstorrent passthrough. The tenstorrent/tt-installer action
+# runs inside a throwaway container in mode: container.
+#
+# Runner registration (one-time, on the QB2) — see README "QB2 image CI".
+#
+# Triggers: push to main (docker/** or this file) + manual dispatch.
+# NO pull_request trigger — never run fork code on the hardware box.
+
+name: QB2 Image CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docker/Dockerfile.qb2"
+      - "docker/scripts/**"
+      - "docker/debs/**"
+      - ".github/workflows/qb2-image.yml"
+  workflow_dispatch:
+    inputs:
+      run_inference:
+        description: "Full build + real inference on the cards (30-90 min)"
+        type: boolean
+        default: false
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Validate the golden version set installs clean, host-safe (throwaway
+  # container). Publishes the resolved .ttis as an artifact.
+  # -------------------------------------------------------------------------
+  golden-stack:
+    name: Golden stack via tt-installer action
+    runs-on: [self-hosted, tenstorrent]
+    container:
+      image: ubuntu:24.04
+    steps:
+      - name: Install golden Tenstorrent stack (container mode)
+        uses: tenstorrent/tt-installer@latest
+        with:
+          channel: release
+          mode: container
+          update-firmware: off
+          container-runtime: "no"
+
+      - name: Show resolved golden versions (.ttis)
+        run: cat "${RUNNER_TEMP}/tt-installer-state.ttis" || echo "no .ttis found"
+
+  # -------------------------------------------------------------------------
+  # Build Dockerfile.qb2 (checkout) + smoke tests. Runs on every push.
+  # -------------------------------------------------------------------------
+  build-qb2:
+    name: Build (checkout) + smoke tests
+    runs-on: [self-hosted, tenstorrent]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image (checkout mode)
+        run: |
+          docker build \
+            -f docker/Dockerfile.qb2 \
+            --build-arg TT_METAL_BUILD=checkout \
+            -t qb2-env:ci \
+            docker/
+
+      - name: Smoke test
+        run: docker/scripts/qb2_smoke.sh qb2-env:ci
+
+      - name: Clean up image
+        if: always()
+        run: docker rmi qb2-env:ci || true
+
+  # -------------------------------------------------------------------------
+  # Full build + real inference on the cards. On-demand only (30-90 min).
+  # -------------------------------------------------------------------------
+  inference:
+    name: Full build + real inference (on demand)
+    if: github.event_name == 'workflow_dispatch' && inputs.run_inference
+    runs-on: [self-hosted, tenstorrent]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image (full mode — compiles TTNN)
+        run: |
+          docker build \
+            -f docker/Dockerfile.qb2 \
+            --build-arg TT_METAL_BUILD=full \
+            -t qb2-env:ci-full \
+            docker/
+
+      - name: Real TTNN op on the cards (device passthrough)
+        run: |
+          docker run --rm \
+            --device /dev/tenstorrent \
+            -v /dev/hugepages-1G:/dev/hugepages-1G \
+            -e TT_METAL_ARCH_NAME=blackhole \
+            qb2-env:ci-full \
+            bash -lc 'source "$HOME/tt-metal/python_env/bin/activate" && \
+              python -c "import ttnn; d=ttnn.open_device(device_id=0); print(\"TTNN\", ttnn.__version__); ttnn.close_device(d)"'
+
+      - name: Clean up image
+        if: always()
+        run: docker rmi qb2-env:ci-full || true
