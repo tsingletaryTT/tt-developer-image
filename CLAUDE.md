@@ -505,3 +505,12 @@ installer path for QB2-image testing.
 - Sub-project B (Claude skill to dispatch arbitrary projects into the image for
   clean-install + inference) is deferred to its own spec.
 Spec: `docs/superpowers/specs/2026-07-15-golden-qb2-image-ci-design.md`.
+
+### 2026-07-16 — Pivot: on-demand CLI runner instead of GH self-hosted runner
+Decision: skip registering the QuietBox as a GitHub Actions runner ("GH doesn't
+have to know about us"). Added `docker/scripts/ci-qb2.sh` — a local, on-demand
+runner (golden-stack / build-qb2 / inference phases, `--fast` and `--inference`
+flags) that runs the same checks from the CLI, fully container-isolated. The
+`qb2-image.yml` workflow is kept but made dormant: `workflow_dispatch`-only (no
+push trigger), documented as an optional GitHub-native path that only works if a
+self-hosted runner is ever registered. Merged `feat/golden-qb2-image-ci` to main.

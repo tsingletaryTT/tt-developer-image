@@ -37,3 +37,6 @@ Thumbs.db
 
 # Locally-built tt-toplike .deb packages (dropped in for Dockerfile.qb2 step 7)
 docker/debs/*.deb
+
+# subagent-driven-development scratch (briefs, reports, review diffs, ledger)
+.superpowers/

@@ -500,38 +500,37 @@ docker push ghcr.io/tsingletary/tt-developer-image:sim-bh
 
 To make public: GitHub → your profile → Packages → `tt-developer-image` → Package settings → Change visibility → Public.
 
-### QB2 image CI (self-hosted, container-isolated)
+### QB2 image CI — on-demand from the CLI
 
-`.github/workflows/qb2-image.yml` tests `Dockerfile.qb2` on a real QuietBox 2
-registered as a self-hosted GitHub Actions runner. **Every step runs in Docker —
-the host TT install is never modified**; cards reach CI only via
-`--device /dev/tenstorrent` passthrough.
-
-Jobs:
-- **golden-stack** — runs the [Install Tenstorrent Stack](https://github.com/marketplace/actions/install-tenstorrent-stack)
-  action (`channel: release`, `mode: container`) in a throwaway container and
-  publishes the resolved `.ttis` version set as an artifact.
-- **build-qb2** — builds the image in checkout mode and runs
-  `docker/scripts/qb2_smoke.sh` (paths, venvs, `tt-smi`/`hf` symlinks, arch var,
-  source trees). Runs on every push to `main`.
-- **inference** — on-demand only (`workflow_dispatch` → `run_inference: true`):
-  full build (30–90 min) then a real TTNN op against the cards via passthrough.
-
-**One-time runner registration** (on the QB2):
+`Dockerfile.qb2` is tested on the QuietBox itself with the on-demand runner
+`docker/scripts/ci-qb2.sh` — **no GitHub runner, no registration; GitHub is not
+involved.** Everything runs in Docker, so the host TT install is never modified;
+cards are reached only via `--device /dev/tenstorrent` passthrough (inference
+phase only).
 
 ```bash
-# Repo → Settings → Actions → Runners → New self-hosted runner (Linux x64)
-# copy the registration TOKEN, then:
-mkdir -p ~/actions-runner && cd ~/actions-runner
-curl -o actions-runner.tar.gz -L \
-  https://github.com/actions/runner/releases/latest/download/actions-runner-linux-x64.tar.gz
-tar xzf actions-runner.tar.gz
-./config.sh --url https://github.com/tsingletaryTT/tt-developer-image \
-  --token <TOKEN> --labels self-hosted,tenstorrent --unattended
-sudo ./svc.sh install && sudo ./svc.sh start   # run as a service
+docker/scripts/ci-qb2.sh              # golden-stack + checkout build + smoke  (default)
+docker/scripts/ci-qb2.sh --fast       # checkout build + smoke only
+docker/scripts/ci-qb2.sh --inference  # + full build & a real TTNN op on the cards (30–90 min)
+docker/scripts/ci-qb2.sh --help
 ```
 
-The runner user must be in the `docker` group (already true on this QB2).
+Phases (each mirrors a job in the optional workflow below):
+- **golden-stack** — verifies the golden `release` version set installs clean on
+  a bare `ubuntu:24.04` (throwaway container) and prints the resolved `.ttis`.
+  This is the CLI equivalent of the [Install Tenstorrent Stack](https://github.com/marketplace/actions/install-tenstorrent-stack)
+  action (the composite action only runs inside GitHub Actions).
+- **build-qb2** — builds the image in checkout mode and runs
+  `docker/scripts/qb2_smoke.sh` (user, venv paths, `tt-smi`/`hf` symlinks, arch
+  var, source trees).
+- **inference** — full build then a real TTNN op against the cards via
+  passthrough. Opt-in (`--inference`) because the compile is 30–90 min.
+
+**Optional GitHub-native path.** `.github/workflows/qb2-image.yml` runs the same
+three jobs on a `[self-hosted, tenstorrent]` runner, but it is **dormant**:
+`workflow_dispatch`-only (no push trigger) and it only executes if you later
+register the QuietBox as a self-hosted runner. The CLI script above is the
+supported path and needs none of that.
 
 ### GHCR tag convention
 

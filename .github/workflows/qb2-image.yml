@@ -1,28 +1,24 @@
 # .github/workflows/qb2-image.yml
 #
-# CI for the QB2-exact image (docker/Dockerfile.qb2). Runs on the QuietBox 2
-# itself, registered as a self-hosted runner labelled [self-hosted, tenstorrent].
+# OPTIONAL / DORMANT. The supported way to run these checks is the CLI script
+# docker/scripts/ci-qb2.sh, run on the QuietBox itself — GitHub is not involved
+# and no runner is registered (see README "QB2 image CI"). This workflow is kept
+# only as a ready-made GitHub-native path IF a self-hosted runner labelled
+# [self-hosted, tenstorrent] is ever registered. Until then it will not run:
+# it is workflow_dispatch-only (no push trigger) so it never queues against a
+# non-existent runner, and even a manual dispatch just waits until a runner
+# exists.
 #
-# HOST SAFETY: every step runs inside Docker. The host's KMD / firmware /
-# HugePages / system packages are NEVER modified. Real cards reach CI only via
-# --device /dev/tenstorrent passthrough. The tenstorrent/tt-installer action
-# runs inside a throwaway container in mode: container.
+# HOST SAFETY (mirrors ci-qb2.sh): every step runs inside Docker. The host's
+# KMD / firmware / HugePages / system packages are NEVER modified. Real cards
+# reach CI only via --device /dev/tenstorrent passthrough. The
+# tenstorrent/tt-installer action runs inside a throwaway container.
 #
-# Runner registration (one-time, on the QB2) — see README "QB2 image CI".
-#
-# Triggers: push to main (docker/** or this file) + manual dispatch.
-# NO pull_request trigger — never run fork code on the hardware box.
+# NO pull_request trigger — never run fork code on a hardware box.
 
-name: QB2 Image CI
+name: QB2 Image CI (optional — needs a self-hosted runner)
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "docker/Dockerfile.qb2"
-      - "docker/scripts/**"
-      - "docker/debs/**"
-      - ".github/workflows/qb2-image.yml"
   workflow_dispatch:
     inputs:
       run_inference:
@@ -60,7 +56,7 @@ jobs:
         run: cat "${RUNNER_TEMP}/tt-installer-state.ttis" || echo "no .ttis found"
 
   # -------------------------------------------------------------------------
-  # Build Dockerfile.qb2 (checkout) + smoke tests. Runs on every push.
+  # Build Dockerfile.qb2 (checkout) + smoke tests. (CLI equivalent: ci-qb2.sh)
   # -------------------------------------------------------------------------
   build-qb2:
     name: Build (checkout) + smoke tests
