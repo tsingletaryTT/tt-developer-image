@@ -26,7 +26,7 @@ One image, three ways to use it:
 |---|---|---|
 | **tt-metal** | `~/tt-metal` | Core TT-Metalium stack, cloned at a pinned commit. Compiled in `full`/`sim` modes. |
 | **TTNN** | inside venv-metal | High-level neural network op library built on tt-metal |
-| **Tenstorrent vLLM** | `~/tt-vllm` | TT fork of vLLM for production LLM serving |
+| **TT vLLM plugin** | `~/vllm-tt-plugin` | Tenstorrent vLLM platform plugin (works against upstream vLLM) |
 | **TT-Forge** | venv-forge | TT compiler stack: forge.compile(), TT-XLA PJRT plugin, JAX |
 | **ttsim** | `~/sim/wh/`, `~/sim/bh/` | Hardware simulator `.so` files (sim mode only) |
 | **tt-toplike** | `/usr/local/bin/tt-toplike` | htop-style real-time hardware monitor |
@@ -43,7 +43,7 @@ Three isolated virtualenvs — never mix them:
 
 ```
 /opt/venv-metal   Python 3.10 — tt-metal, TTNN, tt-smi, hf CLI
-/opt/venv-vllm    Python 3.10 — Tenstorrent vLLM, torch 2.5.0+cpu, hf CLI
+/opt/venv-vllm    Python 3.10 — upstream vLLM 0.24.0 + TT plugin, hf CLI
 /opt/venv-forge   Python 3.12 — tt-forge, pjrt_plugin_tt, torch-xla, JAX, vllm_tt
 ```
 
@@ -286,14 +286,84 @@ docker build --build-arg TT_METAL_BUILD=sim \
 
 ---
 
+## The "latest metal" variant
+
+`docker/Dockerfile.latest-metal` is a separate image that tracks tt-metal's newest
+**release tag** instead of a pinned commit, and takes the compiled runtime from the
+matching published `ttnn` wheel — so there is no 30–90 minute source build.
+
+Built and verified on a TT-QuietBox 2 (2026-08-03): **~4.5 min cold build, 18.5 GB**,
+resolving `v0.75.0` / `ttnn 0.75.0`. `qb2_smoke.sh` passes, and in-container the plugin
+selects `TTPlatform`, sees all 4 Blackhole chips, and resolves `MESH_DEVICE=P300x2` to a
+`(1,4)` mesh. Most of the image size is a CUDA torch wheel that upstream's installer
+resolves; see the caveat at the top of the Dockerfile.
+
+```bash
+# newest tt-metal release, resolved at build time
+docker build -f docker/Dockerfile.latest-metal \
+  -t tenstorrent/dev-qb2:latest-metal docker/
+
+# pin the release instead (still wheel-based)
+docker build -f docker/Dockerfile.latest-metal \
+  --build-arg TT_METAL_TAG=v0.74.0 \
+  -t tenstorrent/dev-qb2:metal-v0.74.0 docker/
+```
+
+Why it is a separate file rather than a flag on `Dockerfile.qb2`: the two have
+opposite goals. `Dockerfile.qb2` pins a commit so rebuilds are byte-identical. This
+variant is deliberately *current*, so two builds a week apart may differ. Keeping
+them apart keeps the reproducible image honestly reproducible.
+
+**The source checkout is still required.** The `ttnn` wheel ships `ttnn`, `tt_lib`,
+`tracy` and `triage` — but no `models/` tree, and the vLLM plugin registers its model
+classes by dotted path into `models.*`. So the variant clones tt-metal at the tag
+(shallow, for the working tree only) and puts just that root on `sys.path`; `ttnn`
+itself comes from the wheel. `<root>/ttnn` is deliberately left off the path.
+
+Which tt-metal did a given image actually get?
+
+```bash
+docker run --rm <image> cat /home/ttuser/.metal-release.env
+# TT_METAL_TAG=v0.75.0
+# TTNN_VERSION=0.75.0
+```
+
+`qb2_smoke.sh` asserts that file agrees with both the checked-out tag and the
+installed wheel, and that `ttnn` resolves from site-packages while `models/` resolves
+from the source tree. On the pinned images that check is skipped.
+
+### A note on tt-installer's golden versions
+
+tt-installer pins a golden version set (`tt-sw-manifest`), and that manifest does
+publish a `metal-version`. This variant does **not** follow it, for two reasons:
+
+- tt-installer never reads that field — there is no reference to it in `install.m4`.
+  It installs metalium as a *container wrapper*, which cannot provide the importable
+  `ttnn` the vLLM plugin needs.
+- The manifest lags. At the time of writing it named `v0.72.0`, which predates model
+  modules the current plugin registers (`models/demos/blackhole/qwen36` is absent
+  there and present in `v0.75.0`).
+
+Print the golden value for comparison with:
+
+```bash
+bash docker/scripts/resolve_metal_release.sh --golden
+```
+
+What tt-installer *does* pair — driver, firmware, `tt-smi`, `tt-flash`, `sfpi` — is
+still used, via the `--versions=release` invocation in every image.
+
+---
+
 ## Build-time Arguments
 
 | Argument | Default | Description |
 |---|---|---|
 | `TT_METAL_BUILD` | `checkout` | Build mode: `checkout`, `full`, or `sim` |
 | `TTSIM_VERSION` | `latest` | ttsim release tag. `latest` tracks HEAD; pin (e.g. `v1.7.0`) for reproducible builds. Sim mode only. |
-| `TT_METAL_COMMIT` | pinned SHA | tt-metal commit to check out |
-| `VLLM_BRANCH` | `dev` | Tenstorrent vLLM branch |
+| `TT_METAL_COMMIT` | pinned SHA | tt-metal commit to check out (pinned images) |
+| `TT_METAL_TAG` | `latest` | **latest-metal variant only.** tt-metal release tag; `latest` resolves the newest non-prerelease at build time. Also selects the matching `ttnn` wheel. |
+| `VLLM_TT_PLUGIN_REF` | `main` | Ref of tenstorrent/vllm-tt-plugin to check out |
 | `DEV_USER` | `dev` | Linux username inside the container |
 
 ---
@@ -323,7 +393,7 @@ What exists inside a running container and why each directory is where it is:
 │   └── build/                      │  Only present after compilation.
 │       └── lib/                    │  LD_LIBRARY_PATH includes this.
 │
-├── tt-vllm/                        ← Tenstorrent vLLM fork, branch=dev
+├── vllm-tt-plugin/                 ← tenstorrent/vllm-tt-plugin (no fork needed)
 │   └── ...                         │  Cloned in all modes. pip install -e .
 │                                   │  only runs in full/sim (needs compiled
 │                                   │  tt-metal Python bindings).
@@ -352,7 +422,7 @@ What exists inside a running container and why each directory is where it is:
 │   └── lib/python3.10/             │  tt-metal (editable), TTNN, tt-smi, hf CLI
 │                                   │  TTNN import only works after compilation.
 ├── venv-vllm/                      ← Python 3.10 venv
-│   └── lib/python3.10/             │  vLLM (editable), torch 2.5.0+cpu, hf CLI
+│   └── lib/python3.10/             │  upstream vLLM 0.24.0, vllm-tt-plugin (editable), hf CLI
 │                                   │  vLLM import only works after compilation.
 └── venv-forge/                     ← Python 3.12 venv
     └── lib/python3.12/             │  tt-forge, pjrt_plugin_tt, torch 2.10.0+cpu,
@@ -397,15 +467,37 @@ Takes 30–90 min. Requires a host with the TT kernel driver and at least 50 GB 
 
 ### vLLM (venv-vllm)
 
-Must be done **after** `build_tt_metal.sh` — the TT vLLM fork links against compiled tt-metal Python extensions.
+Must be done **after** `build_tt_metal.sh`. The plugin only activates when `ttnn` is importable, so it needs the compiled tt-metal Python extensions; `setup_envs.sh` fails loudly rather than leaving a vLLM that starts without TT hardware.
 
 ```bash
+# VLLM_TT_PLUGIN_SRC defaults to ~/vllm-tt-plugin
 bash /tmp/setup_envs.sh vllm
 
-# Verify
+# Verify: the plugin must be importable AND its entry points registered.
+# vLLM selects the TT platform only when `ttnn` imports, so an installed-but-
+# undiscovered plugin looks like "vLLM works but sees no hardware".
 tt-vllm
-python -c "import vllm; print(vllm.__version__)"
+python -c "import vllm; print(vllm.__version__)"          # expect 0.24.0
+python -c "import vllm_tt_plugin; print('plugin OK')"
+python -c "import ttnn; print('ttnn OK')"
+python -c "
+from importlib.metadata import entry_points
+for g in ('vllm.platform_plugins','vllm.general_plugins'):
+    for e in entry_points(group=g): print(g, e.name, '->', e.value)
+"
 ```
+
+Starting a server logs `Platform plugin tt is activated` when discovery worked.
+
+Multi-chip is selected with `MESH_DEVICE`, never `--tensor-parallel-size` (the TT
+platform rejects tensor and pipeline parallelism). A TT-QuietBox 2 is
+`MESH_DEVICE=P300x2`, which resolves to a `(1,4)` mesh over all four Blackhole chips.
+
+> **`HF_MODEL` is required when `--model` is a local path.** tt-metal's
+> `tt_transformers` uses `HF_MODEL` as its *checkpoint directory*
+> (`model_config.py`: `self.CKPT_DIR = HF_MODEL`), so it must be either a
+> HuggingFace `org/name` or the path to downloaded weights. Serving a local
+> directory without it fails with "Please set HF_MODEL to a HuggingFace name".
 
 ### TT-Forge (venv-forge)
 
@@ -437,6 +529,8 @@ docker/
   scripts/
     build_tt_metal.sh         Compiles tt-metal; also copied to /tmp/ in image (path-overridable via VENV_METAL)
     setup_envs.sh             Sets up venv-vllm and venv-forge; also in /tmp/ (paths overridable via VENV_VLLM/VENV_FORGE)
+                              Wheel mode: set TTNN_WHEEL_VERSION to install a paired ttnn wheel instead of using a compiled tt-metal tree
+    resolve_metal_release.sh  Resolves the tt-metal release tag + matching ttnn wheel version (--golden prints tt-installer's manifest value)
     forge-requirements.txt    URL-dep manifest for uv install of tt-forge stack
     test_sim_mode.sh          Smoke test — mount and run inside a sim container
 

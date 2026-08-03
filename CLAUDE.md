@@ -514,3 +514,142 @@ flags) that runs the same checks from the CLI, fully container-isolated. The
 `qb2-image.yml` workflow is kept but made dormant: `workflow_dispatch`-only (no
 push trigger), documented as an optional GitHub-native path that only works if a
 self-hosted runner is ever registered. Merged `feat/golden-qb2-image-ci` to main.
+
+### 2026-08-03 — vLLM: fork build → standalone TT platform plugin (validated on QB2)
+Prompt: "upgrade what we're doing in the developer image to use the new vLLM path.
+Validate it there for me now."
+
+**What changed.** Tenstorrent vLLM support is no longer a patched fork build; it is
+an out-of-tree vLLM *platform plugin* whose official home is the standalone repo
+`github.com/tenstorrent/vllm-tt-plugin`. It works against **upstream** vLLM — its
+own `docs/install-vllm-tt.sh` pins `vllm==0.24.0` — so no fork is cloned any more.
+
+- `docker/scripts/setup_envs.sh` — vllm target rewritten to defer to the plugin's
+  own installer, plus a hard-failing plugin-discovery check.
+- `docker/Dockerfile`, `docker/Dockerfile.qb2` — clone `vllm-tt-plugin` instead of
+  the fork. `VLLM_REPO`/`VLLM_BRANCH` → `VLLM_TT_PLUGIN_REPO`/`VLLM_TT_PLUGIN_REF`;
+  new `VLLM_TT_PLUGIN_SRC` passed to `setup_envs.sh` (`VLLM_SRC` still honoured).
+- `docker/scripts/qb2_smoke.sh` — checks the plugin checkout and its installer +
+  overrides file, and verifies both vLLM entry points when the install ran.
+- Dropped the `torch==2.5.0+cpu` pin: it predates the plugin and conflicts with
+  what `vllm==0.24.0` resolves.
+
+**Four failures found only by actually running it** (all now handled in the script):
+1. **numpy.** ttnn pins `numpy<2`; resolving vLLM alone pulls numpy 2.x (its opencv
+   floor) and `import ttnn` then dies. The plugin's `docs/vllm-overrides.txt`
+   (`numpy>=1.24.4,<2` + `opencv-python-headless==4.11.0.86`) fixes it — upstream
+   landed that same override on 2026-08-03 (#20), independently confirming it.
+2. **ttnn reachability.** This image's `venv-vllm` is separate from tt-metal's
+   `python_env`, but the plugin activates *only* when `ttnn` imports. Wired via a
+   `ttnn-custom.pth` pointing at the tt-metal tree (what a real QB2 does); the
+   script now exits non-zero rather than shipping a vLLM that sees no hardware.
+3. **torchvision.** transformers' pixtral image processor imports it while vLLM
+   inspects the TT model class. Absent → "Model architectures ['TTQwen3ForCausalLM']
+   failed to be inspected".
+4. **pytest.** `tt-metal/models/common/utility_functions.py` imports it at module
+   scope. Absent → same opaque inspection failure.
+
+Also: ttnn exposes no `__version__` — read it via `importlib.metadata.version("ttnn")`.
+
+**Validated on this QuietBox 2 (4x P300C)**, in throwaway venvs; `~/.tenstorrent-venv`
+was never touched. Confirmed: `Platform plugin tt is activated`; `TTPlatform` selected
+(`device_name=tt`); both entry points registered; `MESH_DEVICE=P300x2` → `(1,4)`; UMD
+opens chips {0,1,2,3}; weights load, KV cache allocates on-mesh, server reaches
+healthy, `/v1/models` and `/v1/completions` serve. Versions: upstream vllm 0.24.0,
+numpy 1.26.4, ttnn 0.65.1rc17.dev6200.
+
+**Known-bad, and NOT caused by this change: generation output is degenerate.** Every
+run collapses into repetition ("Paris. The city. The city..."). Reproduced across 5
+configs — fork `dev@50d3f5ff4` *and* upstream `0.24.0`; Qwen3-0.6B, Llama-3.1-8B-Instruct,
+Qwen3-32B; `P100` (1 chip) *and* `P300x2` (4 chips) — with byte-identical output across
+both vLLM versions. So it is neither the plugin, the install path, the mesh, nor the
+model. The only invariant is this host's tt-metal build (`0.65.1rc17.dev6200`, a dev
+build far from any release in tt-metal's LLMs table, which pins tt-metal release ↔ vLLM
+commit pairs). The prior working Qwen3-32B/P300x2 run on this box came from a
+tt-inference-server Docker image with its own pinned tt-metal, not the host tree.
+**Next step: retest against a paired tt-metal release before trusting output quality.**
+
+Two facts worth remembering:
+- **`HF_MODEL` is still required** when `--model` is a local path — `tt_transformers`
+  uses it as the checkpoint dir (`model_config.py`: `self.CKPT_DIR = HF_MODEL`).
+- **Qwen3-0.6B is not a tt-transformers model.** `0.6B` appears nowhere in
+  `models/tt_transformers/`; the only supported Qwen3 there is Qwen3-32B. The plugin
+  maps it by architecture, so it loads and runs but has no validated params.
+
+### 2026-08-03 (later) — "latest metal" image variant
+Prompt: "track the latest release in a separate docker image/dockerfile setup.
+We'll have a 'latest metal' variant."
+
+**Added** `docker/Dockerfile.latest-metal` plus `docker/scripts/resolve_metal_release.sh`.
+The variant follows tt-metal's newest *release tag* rather than the pinned commit, and
+takes the compiled runtime from the matching published `ttnn` wheel — no 30–90 min
+source build. Kept as a separate file on purpose: `Dockerfile.qb2` pins a commit to be
+byte-reproducible, this one is deliberately current, and mixing those goals in one file
+would quietly break the reproducible promise.
+
+**Why the source checkout survives.** The `ttnn` wheel does *not* ship `models/` —
+verified by unzipping it, top level is `ttnn`, `tt_lib`, `tracy`, `triage`, `ttnn.libs`
+and zero `models/tt_transformers` entries. The plugin registers model classes by dotted
+path into `models.*`, so the variant shallow-clones tt-metal at the tag and puts only
+that root on `sys.path`. `<root>/ttnn` is deliberately omitted: it has no `__init__.py`,
+so listing it would register a namespace portion for `ttnn`. Verified empirically that
+the wheel's real package still wins the path scan either way.
+
+`setup_envs.sh` gained **wheel mode** (`TTNN_WHEEL_VERSION`) alongside the existing
+source mode, and its verification now proves `ttnn` resolves from site-packages *and*
+`models/` from the source tree. `qb2_smoke.sh` asserts `~/.metal-release.env` agrees
+with both the checked-out tag and the installed wheel; skipped on pinned images.
+
+**Why not tt-installer's golden `metal-version`.** It publishes one (`v0.72.0` at the
+time of writing), but tt-installer never reads that field — no reference in
+`install.m4` — and it ships metalium as a *container wrapper*, which cannot supply the
+importable `ttnn` the plugin needs. Golden also lags: `v0.72.0` lacks
+`models/demos/blackhole/qwen36`, which the current plugin registers and `v0.75.0` has.
+`resolve_metal_release.sh --golden` prints it for comparison. What tt-installer *does*
+pair (kmd, firmware, tt-smi, tt-flash, sfpi) is still used via `--versions=release`.
+
+**The pinned images were badly stale**: `TT_METAL_COMMIT=555f240b7d` is a 2026-03-05
+`[release-tests]` commit, five months old and not a release tag.
+
+**Negative result worth recording — this did NOT fix the degenerate output.** I built the
+paired stack by hand on the QB2 (ttnn 0.75.0 wheel + tt-metal v0.75.0 source `models/`
++ upstream vllm 0.24.0 + standalone plugin; plugin activated, entry points registered,
+`models` resolving from v0.75.0) and served Llama-3.1-8B-Instruct on `MESH_DEVICE=P300x2`.
+Output was **byte-identical to the earlier degenerate runs**
+(`' a city of the largest city of the of the of the...'`). So the tt-metal version
+hypothesis is disproved: a fully released, self-consistent tt-metal behaves the same.
+
+Corrected picture: output is deterministic per (model, mesh) and unchanged across
+tt-metal 0.65.1rc17.dev6200 → v0.75.0 and across two vLLM versions. Every model gets
+roughly the first token right and then collapses, which looks like context/attention not
+being used rather than a bad checkout. **New leading suspect: host firmware and driver
+are ahead of every golden pairing** — this box runs firmware `19.12.0.0` and kmd
+`2.10.0`, while golden names `19.11.0` / `2.9.0`. Next step is to test against
+golden-matched firmware/kmd, not another tt-metal version.
+
+#### Build result (2026-08-03)
+Full cold build of `Dockerfile.latest-metal`: **~4.5 min, 18.5 GB**, resolving
+`TT_METAL_TAG=v0.75.0` / `TTNN_VERSION=0.75.0`. That replaces a 30–90 min source build.
+`qb2_smoke.sh` passes end to end, and a `--device /dev/tenstorrent` run inside the
+container reports `TTPlatform`, 4 devices, and `P300x2 -> (1,4)`.
+
+Two bugs the build itself surfaced, both fixed:
+- **python3.10 was unreachable.** The first draft called `scripts/install_system_deps.sh`,
+  which `sudo`s (not installed yet at that layer) and assumes python3.10 already exists.
+  Ubuntu 24.04 ships 3.12, so the QB2 layout needs the deadsnakes PPA. Now mirrors
+  `Dockerfile.qb2`'s proven apt block, and grants ttuser NOPASSWD sudo for tt-installer.
+- **`tt-smi` / `hf` were not on PATH.** tt-installer drops them in the metal venv's bin;
+  a real QB2 exposes them from `~/.local/bin`. Added the symlink step.
+
+Also trimmed a doc lie: the header had promised a `TORCH_CPU_ONLY=1` flag that was never
+implemented. The CUDA-torch caveat is now stated plainly instead.
+
+`qb2_smoke.sh` now separates required components (metal venv, vllm venv, tt-metal,
+vllm-tt-plugin) from optional ones (forge venv, tt-inference-server), so it works against
+both the full QB2 image and this leaner variant without weakening the checks that matter.
+
+A false alarm worth remembering: BuildKit's progress output prints RUN commands with
+build-args interpolated, so layer 8 *displayed* `git clone --branch "latest"`. `RUN` does
+not do ARG substitution — the shell does — and the layer's real stdout said
+`Cloning tt-metal at v0.75.0`, with `remote.origin.fetch = +refs/tags/v0.75.0`. Don't
+"fix" that again.

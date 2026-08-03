@@ -29,7 +29,7 @@
 # QB2 path layout reproduced here:
 #   ~/tt-metal/                         tt-metal source tree
 #   ~/tt-metal/python_env/              venv-metal  (TTNN, tt-smi, hf)
-#   ~/tt-metal/build/python_env_vllm/   venv-vllm   (TT vLLM fork)
+#   ~/tt-metal/build/python_env_vllm/   venv-vllm   (upstream vLLM + TT plugin)
 #   ~/tt-forge-venv/                    venv-forge  (TT-Forge / TT-XLA)
 #   ~/models/                           model storage (pre-created, empty)
 #   ~/tt-scratchpad/                    scratch space
@@ -118,7 +118,7 @@ ENV TT_METAL_HOME=/home/ttuser/tt-metal
 # exact paths so every script, alias, and VHS tape works without modification.
 #
 #   ~/tt-metal/python_env/              Python 3.10 — TTNN, tt-smi, hf CLI
-#   ~/tt-metal/build/python_env_vllm/   Python 3.10 — Tenstorrent vLLM fork
+#   ~/tt-metal/build/python_env_vllm/   Python 3.10 — vLLM + TT platform plugin
 #   ~/tt-forge-venv/                    Python 3.12 — TT-Forge / TT-XLA
 #
 # Note: ~/tt-metal/build/ is created here explicitly because the full build
@@ -218,20 +218,26 @@ RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
 # 9. vLLM env
 # ---------------------------------------------------------------------------
 
-ARG VLLM_REPO=https://github.com/tenstorrent/vllm.git
-ARG VLLM_BRANCH=dev
+# The TT platform plugin's official home is the standalone repo below; it works
+# against *upstream* vLLM (pinned to vllm==0.24.0 by its own installer), so no
+# Tenstorrent vLLM fork is cloned any more. The old in-fork plugin under
+# tenstorrent/vllm's dev branch (plugins/vllm-tt-plugin) is being retired.
+ARG VLLM_TT_PLUGIN_REPO=https://github.com/tenstorrent/vllm-tt-plugin.git
+ARG VLLM_TT_PLUGIN_REF=main
 
-RUN git clone ${VLLM_REPO} /home/ttuser/tt-vllm && \
-    cd /home/ttuser/tt-vllm && \
-    git checkout ${VLLM_BRANCH}
+RUN git clone ${VLLM_TT_PLUGIN_REPO} /home/ttuser/vllm-tt-plugin && \
+    cd /home/ttuser/vllm-tt-plugin && \
+    git checkout ${VLLM_TT_PLUGIN_REF}
 
 COPY scripts/setup_envs.sh /tmp/setup_envs.sh
 
 RUN if [ "${TT_METAL_BUILD}" = "full" ]; then \
-      VENV_VLLM=/home/ttuser/tt-metal/build/python_env_vllm bash /tmp/setup_envs.sh vllm; \
+      VENV_VLLM=/home/ttuser/tt-metal/build/python_env_vllm \
+      VLLM_TT_PLUGIN_SRC=/home/ttuser/vllm-tt-plugin \
+        bash /tmp/setup_envs.sh vllm; \
     else \
       echo "TT_METAL_BUILD=${TT_METAL_BUILD}: skipping vLLM pip install."; \
-      echo "Run: VENV_VLLM=~/tt-metal/build/python_env_vllm bash /tmp/setup_envs.sh vllm"; \
+      echo "Run: VENV_VLLM=~/tt-metal/build/python_env_vllm VLLM_TT_PLUGIN_SRC=~/vllm-tt-plugin bash /tmp/setup_envs.sh vllm"; \
     fi
 
 # ---------------------------------------------------------------------------

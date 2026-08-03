@@ -1,0 +1,228 @@
+# syntax=docker/dockerfile:1
+# ---------------------------------------------------------------------------
+# Dockerfile.latest-metal — "latest metal" variant
+# ---------------------------------------------------------------------------
+# Same QB2 layout as Dockerfile.qb2, but instead of pinning a tt-metal *commit*
+# it tracks tt-metal's newest **release tag** and takes the compiled runtime from
+# the matching published `ttnn` wheel.
+#
+# Why a separate file rather than a build arg on Dockerfile.qb2
+# ------------------------------------------------------------
+# The two have opposite goals. Dockerfile.qb2 exists to be reproducible: a fixed
+# TT_METAL_COMMIT, byte-identical rebuilds. This variant exists to be *current*:
+# by default it resolves whatever tt-metal released most recently, so two builds a
+# week apart may legitimately differ. Keeping them separate keeps the reproducible
+# image honestly reproducible.
+#
+# What it changes
+# ---------------
+#   1. tt-metal is checked out at a release **tag**, not a commit SHA. The pinned
+#      image tracks 555f240b7d — a March 2026 [release-tests] commit — which drifts
+#      away from everything that is version-paired against a release (the vLLM
+#      plugin's model expectations, model implementations, firmware).
+#   2. The compiled runtime comes from `pip install ttnn==<same version>` rather
+#      than a 30–90 minute source build.
+#   3. The tt-metal source tree is still checked out, because the ttnn wheel does
+#      **not** ship the `models/` tree (its top level is ttnn, tt_lib, tracy,
+#      triage). The plugin registers model classes by dotted path into `models.*`,
+#      so the source is required — it just does not need compiling.
+#
+# On tt-installer's golden manifest
+# --------------------------------
+# tt-installer pins a golden version set (tt-sw-manifest), and that manifest does
+# publish a `metal-version` field. Two reasons we do not simply adopt it:
+#   * tt-installer never reads it — there is no reference in install.m4. It ships
+#     metalium as a *container* wrapper, which cannot supply the importable `ttnn`
+#     the vLLM plugin needs.
+#   * At the time of writing golden named v0.72.0, which predates model modules the
+#     current plugin registers (models/demos/blackhole/qwen36 is absent there,
+#     present in v0.75.0).
+# `resolve_metal_release.sh --golden` prints the golden value for comparison.
+#
+# Build:
+#   # newest tt-metal release, resolved at build time
+#   docker build -f docker/Dockerfile.latest-metal -t tenstorrent/dev-qb2:latest-metal docker/
+#
+#   # pin the release instead (still wheel-based, still no source build)
+#   docker build -f docker/Dockerfile.latest-metal \
+#     --build-arg TT_METAL_TAG=v0.74.0 \
+#     -t tenstorrent/dev-qb2:metal-v0.74.0 docker/
+#
+# Known caveat, not yet addressed: the plugin's installer does not force a CPU torch
+# build, so this venv resolves a CUDA wheel (torch 2.11.0+cu130 as built). It imports
+# and runs fine — TT execution never goes through torch's CUDA path — but it is the
+# single largest contributor to the ~18.5 GB image. Constraining it means overriding
+# torch inside upstream's installer, which risks diverging from the combination
+# upstream tests, so it is left alone deliberately rather than papered over.
+
+FROM ubuntu:24.04
+
+ARG DEV_USER=ttuser
+ARG DEV_UID=1000
+ARG DEV_GID=1000
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+
+# ---------------------------------------------------------------------------
+# 1. Base OS + system dependencies (mirrors Dockerfile.qb2 step 1)
+# ---------------------------------------------------------------------------
+# deadsnakes is required: Ubuntu 24.04 ships Python 3.12, and the QB2 layout puts
+# tt-metal's python_env and the vLLM venv on 3.10. Note we deliberately do NOT use
+# scripts/install_system_deps.sh here — that script calls sudo (not yet installed at
+# this point) and assumes python3.10 is already reachable.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+ && add-apt-repository -y ppa:deadsnakes/ppa \
+ && rm -rf /var/lib/apt/lists/*
+
+# build-essential/cmake/ninja are needed even though nothing of tt-metal is
+# compiled here: the plugin's installer runs `uv pip install --no-binary vllm`,
+# which builds vLLM from its sdist.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash ca-certificates curl wget git sudo apt-transport-https gnupg lsb-release jq \
+    build-essential ninja-build cmake pkg-config \
+    python3.10 python3.10-venv python3.10-dev \
+    python3.12-venv python3.12-dev \
+    python3-pip \
+    libnuma-dev libhwloc-dev libncurses6 \
+    iproute2 iputils-ping \
+ && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# 2. Create ttuser (mirrors the QB2 default account)
+# ---------------------------------------------------------------------------
+# tt-installer needs passwordless sudo for its apt work, so grant it as
+# Dockerfile.qb2 does. Ubuntu 24.04's stock `ubuntu` user already holds UID 1000
+# and has to go first.
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    groupdel ubuntu 2>/dev/null || true && \
+    groupadd -g ${DEV_GID} ${DEV_USER} && \
+    useradd -m -u ${DEV_UID} -g ${DEV_GID} -s /bin/bash ${DEV_USER} && \
+    usermod -aG sudo ${DEV_USER} && \
+    echo "${DEV_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-${DEV_USER}
+
+USER ${DEV_USER}
+WORKDIR /home/${DEV_USER}
+
+ENV PATH="/home/${DEV_USER}/.local/bin:${PATH}"
+
+# ---------------------------------------------------------------------------
+# 3. Resolve which tt-metal release to use
+# ---------------------------------------------------------------------------
+# TT_METAL_TAG=latest (default) resolves tt-metal's newest non-prerelease tag at
+# build time. Pass an explicit vX.Y.Z to pin. The resolver also derives the
+# matching ttnn wheel version and fails early if that wheel was never published.
+ARG TT_METAL_TAG=latest
+
+COPY --chown=${DEV_UID}:${DEV_GID} scripts/resolve_metal_release.sh /tmp/resolve_metal_release.sh
+RUN bash /tmp/resolve_metal_release.sh "${TT_METAL_TAG}" > /home/${DEV_USER}/.metal-release.env && \
+    cat /home/${DEV_USER}/.metal-release.env
+
+# ---------------------------------------------------------------------------
+# 4. tt-metal source checkout at that tag (for models/, not compiled)
+# ---------------------------------------------------------------------------
+# --depth 1 on a single tag: we need the working tree, not the history. This is a
+# few hundred MB rather than the multi-GB full clone.
+ARG TT_METAL_REPO=https://github.com/tenstorrent/tt-metal.git
+
+RUN . /home/${DEV_USER}/.metal-release.env && \
+    echo "Cloning tt-metal at ${TT_METAL_TAG}" && \
+    git clone --depth 1 --branch "${TT_METAL_TAG}" ${TT_METAL_REPO} \
+        /home/${DEV_USER}/tt-metal && \
+    git -C /home/${DEV_USER}/tt-metal describe --tags && \
+    test -d /home/${DEV_USER}/tt-metal/models/tt_transformers \
+        || { echo "models/tt_transformers missing at ${TT_METAL_TAG}"; exit 1; }
+
+ENV TT_METAL_HOME=/home/${DEV_USER}/tt-metal
+ENV TT_METAL_ARCH_NAME=blackhole
+
+# ---------------------------------------------------------------------------
+# 5. Python virtualenvs at the QB2 paths
+# ---------------------------------------------------------------------------
+# Mirrors Dockerfile.qb2 so scripts, aliases and lessons work unchanged. Note the
+# vLLM venv is separate from tt-metal's python_env, which is exactly why
+# setup_envs.sh has to wire `models/` in explicitly.
+RUN mkdir -p /home/${DEV_USER}/tt-metal/build && \
+    python3.10 -m venv /home/${DEV_USER}/tt-metal/python_env && \
+    python3.10 -m venv /home/${DEV_USER}/tt-metal/build/python_env_vllm && \
+    /home/${DEV_USER}/tt-metal/python_env/bin/pip install --quiet --upgrade pip && \
+    /home/${DEV_USER}/tt-metal/build/python_env_vllm/bin/pip install --quiet --upgrade pip
+
+# tt-metal's python_env gets the paired ttnn too, so `tt-metal`-flavoured work and
+# TTNN experimentation see the same runtime the serving env uses.
+RUN . /home/${DEV_USER}/.metal-release.env && \
+    /home/${DEV_USER}/tt-metal/python_env/bin/pip install --quiet \
+        "ttnn==${TTNN_VERSION}" huggingface-hub
+
+# ---------------------------------------------------------------------------
+# 6. tt-installer (container mode) for tt-smi / tt-flash / hf
+# ---------------------------------------------------------------------------
+# --no-install-metalium-container: metalium here comes from the ttnn wheel plus the
+# source checkout above, not from tt-installer's container wrapper.
+RUN bash -c " \
+    source /home/${DEV_USER}/tt-metal/python_env/bin/activate && \
+    curl -fsSLO https://github.com/tenstorrent/tt-installer/releases/latest/download/install.sh && \
+    chmod +x install.sh && \
+    ./install.sh \
+      --versions=release \
+      --mode-container \
+      --mode-non-interactive \
+      --python-choice=active-venv \
+      --no-install-metalium-container \
+      --no-install-forge-container \
+      --no-install-inference-server \
+      --no-install-studio \
+      --update-firmware=off && \
+    rm -f install.sh"
+
+# ---------------------------------------------------------------------------
+# 7. Put tt-smi / hf on PATH (mirrors Dockerfile.qb2)
+# ---------------------------------------------------------------------------
+# tt-installer drops these into the metal venv's bin, not onto PATH. A real QB2
+# exposes them from ~/.local/bin, so symlink them there — otherwise `tt-smi` is
+# only reachable after activating venv-metal, which surprises everyone.
+RUN mkdir -p /home/${DEV_USER}/.local/bin && \
+    ln -sf /home/${DEV_USER}/tt-metal/python_env/bin/tt-smi \
+           /home/${DEV_USER}/.local/bin/tt-smi && \
+    ln -sf /home/${DEV_USER}/tt-metal/python_env/bin/hf \
+           /home/${DEV_USER}/.local/bin/hf && \
+    ln -sf /home/${DEV_USER}/tt-metal/python_env/bin/tt-flash \
+           /home/${DEV_USER}/.local/bin/tt-flash
+
+# ---------------------------------------------------------------------------
+# 8. TT vLLM platform plugin + upstream vLLM
+# ---------------------------------------------------------------------------
+ARG VLLM_TT_PLUGIN_REPO=https://github.com/tenstorrent/vllm-tt-plugin.git
+ARG VLLM_TT_PLUGIN_REF=main
+
+RUN git clone ${VLLM_TT_PLUGIN_REPO} /home/${DEV_USER}/vllm-tt-plugin && \
+    git -C /home/${DEV_USER}/vllm-tt-plugin checkout ${VLLM_TT_PLUGIN_REF}
+
+COPY --chown=${DEV_UID}:${DEV_GID} scripts/setup_envs.sh /tmp/setup_envs.sh
+
+# TTNN_WHEEL_VERSION switches setup_envs.sh into wheel mode: install the paired
+# ttnn wheel and put only the tt-metal root on sys.path for models/. It verifies
+# ttnn, models/, and both plugin entry points, and fails the build if any is
+# missing — a plugin that installs but never activates is the failure mode this
+# guards against.
+RUN . /home/${DEV_USER}/.metal-release.env && \
+    VENV_VLLM=/home/${DEV_USER}/tt-metal/build/python_env_vllm \
+    VLLM_TT_PLUGIN_SRC=/home/${DEV_USER}/vllm-tt-plugin \
+    TT_METAL_HOME=/home/${DEV_USER}/tt-metal \
+    TTNN_WHEEL_VERSION="${TTNN_VERSION}" \
+      bash /tmp/setup_envs.sh vllm
+
+# ---------------------------------------------------------------------------
+# 9. Environment switchers, matching the other images
+# ---------------------------------------------------------------------------
+RUN printf '\n# ── Tenstorrent environment switchers ───────────────────────\n# Usage: tt-metal  |  tt-vllm\nexport TT_METAL_HOME=%s\nexport TT_METAL_ARCH_NAME=blackhole\ntt-metal() { deactivate 2>/dev/null || true; source %s/python_env/bin/activate; }\ntt-vllm()  { deactivate 2>/dev/null || true; source %s/build/python_env_vllm/bin/activate; }\n' \
+      "/home/${DEV_USER}/tt-metal" "/home/${DEV_USER}/tt-metal" "/home/${DEV_USER}/tt-metal" \
+      >> /home/${DEV_USER}/.bashrc
+
+# Record what this image actually resolved to, so `docker run <img> cat
+# /home/ttuser/.metal-release.env` answers "which tt-metal is in here?".
+LABEL org.opencontainers.image.description="Tenstorrent QB2 developer image tracking the latest tt-metal release (wheel runtime + source models/) with upstream vLLM and the TT platform plugin"
+
+WORKDIR /home/${DEV_USER}
+CMD ["/bin/bash", "-l"]

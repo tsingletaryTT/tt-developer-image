@@ -161,7 +161,7 @@ ENV PATH="/home/${DEV_USER}/.cargo/bin:${PATH}"
 # ---------------------------------------------------------------------------
 # We create three venvs:
 #   /opt/venv-metal  - tt-metal, TTNN, basic tools (Python 3.10)
-#   /opt/venv-vllm   - vLLM + torch 2.5.0+cpu (Python 3.10)
+#   /opt/venv-vllm   - base vLLM + the Tenstorrent vLLM platform plugin (Python 3.10)
 #   /opt/venv-forge  - tt-forge compiler + TT-XLA PJRT plugin (Python 3.12)
 #
 # venv-forge uses Python 3.12 because:
@@ -278,33 +278,37 @@ RUN if [ "${TT_METAL_BUILD}" = "full" ] || [ "${TT_METAL_BUILD}" = "sim" ]; then
     fi
 
 # ---------------------------------------------------------------------------
-# 6. vLLM env: Tenstorrent fork, pinned torch 2.5.0+cpu
+# 6. vLLM env: base vLLM + the Tenstorrent vLLM platform plugin
 # ---------------------------------------------------------------------------
 
-# Clone Tenstorrent vLLM fork at the HEAD of the dev branch.
-# We track branch HEAD rather than pinning to a specific commit because the
-# dev branch is the integration target for current tt-metal builds; a stale
-# commit pin frequently drifts out of sync with the tt-metal commit above.
-# If you need a reproducible build, pass --build-arg VLLM_BRANCH=<tag or sha>.
-ARG VLLM_REPO=https://github.com/tenstorrent/vllm.git
-ARG VLLM_BRANCH=dev
+# Clone the Tenstorrent vLLM *platform plugin*. This is its official home, and
+# it works against upstream vLLM — its installer pins vllm==0.24.0 — so no
+# Tenstorrent vLLM fork is involved. The old in-fork plugin on tenstorrent/vllm's
+# dev branch is being retired.
+# For a reproducible build, pass --build-arg VLLM_TT_PLUGIN_REF=<tag or sha>.
+ARG VLLM_TT_PLUGIN_REPO=https://github.com/tenstorrent/vllm-tt-plugin.git
+ARG VLLM_TT_PLUGIN_REF=main
 
-RUN git clone ${VLLM_REPO} /home/${DEV_USER}/tt-vllm && \
-    cd /home/${DEV_USER}/tt-vllm && \
-    git checkout ${VLLM_BRANCH}
+RUN git clone ${VLLM_TT_PLUGIN_REPO} /home/${DEV_USER}/vllm-tt-plugin && \
+    cd /home/${DEV_USER}/vllm-tt-plugin && \
+    git checkout ${VLLM_TT_PLUGIN_REF}
 
-# Install vLLM dependencies in /opt/venv-vllm:
-#   - PyTorch 2.5.0+cpu
-#   - other core deps (fairscale, termcolor, loguru, blobfile, fire, pytz, etc.)
+# Install base vLLM + the Tenstorrent vLLM platform plugin into /opt/venv-vllm.
 #
-# Skipped in checkout mode: the Tenstorrent vLLM fork's setup.py links against
-# compiled tt-metal Python extensions, so `pip install -e .` will fail without
-# the build artifacts produced by build_tt_metal.sh.
-# To complete the vLLM install after building tt-metal at runtime:
+# Tenstorrent support is an out-of-tree vLLM *platform plugin* now, not a patched
+# vLLM build, so setup_envs.sh does a two-part install: base vLLM with
+# VLLM_TARGET_DEVICE=empty, then plugins/vllm-tt-plugin from the same checkout.
+# torch is intentionally no longer pinned — the old 2.5.0+cpu pin predates the
+# plugin and conflicts with what current vLLM resolves.
+#
+# Skipped in checkout mode: the plugin needs an importable `ttnn`, which comes
+# from the compiled tt-metal Python extensions that build_tt_metal.sh produces.
+# setup_envs.sh fails loudly rather than leaving a vLLM that starts without TT
+# hardware. To complete the install after building tt-metal at runtime:
 #   bash /tmp/setup_envs.sh vllm
 COPY scripts/setup_envs.sh /tmp/setup_envs.sh
 RUN if [ "${TT_METAL_BUILD}" = "full" ] || [ "${TT_METAL_BUILD}" = "sim" ]; then \
-      bash /tmp/setup_envs.sh vllm; \
+      VLLM_TT_PLUGIN_SRC=/home/${DEV_USER}/vllm-tt-plugin bash /tmp/setup_envs.sh vllm; \
     else \
       echo "TT_METAL_BUILD=${TT_METAL_BUILD}: skipping vLLM pip install."; \
       echo "Run: bash /tmp/setup_envs.sh vllm after building tt-metal inside the container."; \

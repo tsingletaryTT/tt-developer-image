@@ -203,7 +203,7 @@ python -c "import forge; print('Forge-ONNX ok')"
 | `TT_METAL_BUILD` | `checkout` | `checkout` (clone only), `full` (compile), or `sim` (compile + ttsim binaries) |
 | `TTSIM_VERSION` | `latest` | ttsim release tag (`latest` or e.g. `v1.7.0`). Only used in `sim` mode |
 | `TT_METAL_COMMIT` | pinned SHA | tt-metal commit to check out |
-| `VLLM_BRANCH` | `dev` | Tenstorrent vLLM branch to track |
+| `VLLM_TT_PLUGIN_REF` | `main` | Ref of `tenstorrent/vllm-tt-plugin` to check out (the plugin installs upstream `vllm==0.24.0`; no fork) |
 | `DEV_USER` | `dev` | Username inside the container |
 
 Example — full build with a different tt-metal commit:
