@@ -716,3 +716,31 @@ have failed the new lint step on `docker/Dockerfile`'s known `SecretsUsedInArgOr
 deliberately left alone). The step therefore captures the output, prints it, and fails only on
 `^ERROR: ` lines — verified both ways: the current warning-only tree passes, and a Dockerfile
 with an unresolvable `COPY --from` is caught.
+
+#### Follow-up: the qb2 CI failure my own refactor caused
+The first version of the shared-list refactor fed the two lists to **two separate**
+`apt-get install` invocations. The standard image's CI job passed with it; the new qb2 job
+failed with `xargs` **exit 123** (xargs returns 123 when a command it spawns exits 1-125).
+The apt-level output was not recoverable — CI logs need admin auth, and the check-run
+annotation carried no `raw_details` — so the cause is not *proven*.
+
+What is certain: splitting one resolution into two was an unnecessary behavioural change I
+introduced. `libboost-all-dev` (toolchain list) pulls `libboost-python-dev` → `python3-dev`,
+and resolving that in a second pass can select differently than one combined resolution.
+Collapsed back to a single `apt-get install` fed by `cat base toolchain`, which makes the
+refactor equivalent in effect to the pre-refactor block that had months of green CI. Also
+added `xargs -r` and an `installed: N packages` echo so a future failure names the set.
+
+Verified from a cold cache in isolation (`--no-cache`): `installed: 34 packages`, exit 0.
+
+Two bugs in the guard itself, both surfaced by this change and both fixed:
+  * it flagged *comment lines* that merely mention `apt-get install`
+  * its allow-pattern was the literal substring `xargs apt-get install`, which stopped
+    matching once the command became `xargs -r apt-get install`
+After loosening it, all three negative tests were re-run and still fail correctly — a guard
+relaxed until it passes is not a guard.
+
+Process note: I twice reported measurements that were artefacts of my own tooling rather than
+facts — `docker build --check` exit codes read through a pipe, and an apt package-set diff
+from a regex that swallowed comment prose. Both were caught by re-measuring differently. When
+a number decides a design choice, measure it two ways.

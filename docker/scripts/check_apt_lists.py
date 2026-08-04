@@ -52,7 +52,11 @@ def inline_installs(text: str) -> list[tuple[int, str]]:
     for i, line in enumerate(lines):
         if "apt-get install" not in line:
             continue
-        if "xargs apt-get install" in line:      # driven by a shared list
+        if line.lstrip().startswith("#"):        # prose about apt, not a command
+            continue
+        # Driven by a shared list. Allow xargs flags (-r, -a FILE, ...) between
+        # `xargs` and `apt-get`; matching the bare substring missed `xargs -r`.
+        if re.search(r"\bxargs\b[^|]*\bapt-get install\b", line):
             continue
         if re.search(r"apt-get install\s+-f\b", line):  # dpkg dependency repair
             continue

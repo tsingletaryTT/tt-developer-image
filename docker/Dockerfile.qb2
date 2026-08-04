@@ -53,13 +53,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Package lists live in scripts/ so they cannot drift between the three image
 # variants. Base is shared by all three; the toolchain list is only for variants
 # that build tt-metal from source. Comments and blank lines are stripped.
+#
+# Both lists feed ONE `apt-get install`, matching the pre-refactor behaviour, so apt
+# resolves the whole set together. Two invocations is not equivalent: libboost-all-dev
+# in the toolchain list pulls libboost-python-dev -> python3-dev, and resolving that in
+# a second pass can select differently than a single combined resolution.
+#
+# An earlier version of this refactor did split it, and the qb2 CI build failed there
+# with xargs exit 123 while the identical lists succeeded on another runner. The apt
+# output was not recoverable, so the split is not *proven* to be the cause — but it was
+# an unnecessary behavioural change on my part, and collapsing it back to one call makes
+# this refactor byte-equivalent in effect to the version with months of green CI.
 COPY scripts/apt-packages-base.txt /tmp/apt-base.txt
 COPY scripts/apt-packages-toolchain.txt /tmp/apt-toolchain.txt
 RUN apt-get update && \
-    grep -vE '^[[:space:]]*(#|$)' /tmp/apt-base.txt \
-      | xargs apt-get install -y --no-install-recommends && \
-    grep -vE '^[[:space:]]*(#|$)' /tmp/apt-toolchain.txt \
-      | xargs apt-get install -y --no-install-recommends \
+    cat /tmp/apt-base.txt /tmp/apt-toolchain.txt \
+      | grep -vE '^[[:space:]]*(#|$)' \
+      | tee /tmp/apt-resolved.txt \
+      | xargs -r apt-get install -y --no-install-recommends \
+ && echo "installed: $(wc -w < /tmp/apt-resolved.txt) packages" \
  && rm -rf /var/lib/apt/lists/* /tmp/apt-*.txt
 
 RUN ln -sf /usr/bin/clang-17 /usr/local/bin/clang && \
