@@ -134,7 +134,8 @@ jobs:
       #    We can't test TTNN dispatch (no compiled bindings) or vLLM
       #    (not installed) in this mode.  Instead we verify:
       #      6a — tt-metal source tree is present at the pinned commit
-      #      6b — tt-vllm source tree was cloned successfully
+      #      6b — the TT vLLM plugin checkout is present, with its installer
+      #           and its vllm-overrides.txt (the numpy<2 pin ttnn needs)
       #      6c — TT-Forge-ONNX and pjrt_plugin_tt import in venv-forge
       #           (Forge is always pip-installed; pjrt_plugin_tt is copied
       #            from ghcr.io/tenstorrent/tt-xla-slim via multi-stage build)
@@ -154,16 +155,18 @@ jobs:
               echo 'tt-metal checkout OK'
             "
 
-      - name: "Smoke test 6b — tt-vllm source tree present"
+      - name: "Smoke test 6b — TT vLLM plugin source tree present"
         run: |
           docker run --rm \
             ${{ steps.build.outputs.imageid }} \
             bash -c "
               set -e
-              test -d \"\$HOME/tt-vllm\" || (echo 'ERROR: tt-vllm dir missing' && exit 1)
-              echo '--- tt-vllm HEAD ---'
-              git -C \"\$HOME/tt-vllm\" log -1 --format='%H  %s'
-              echo 'tt-vllm checkout OK'
+              test -d \"\$HOME/vllm-tt-plugin\" || (echo 'ERROR: vllm-tt-plugin dir missing' && exit 1)
+              test -f \"\$HOME/vllm-tt-plugin/docs/install-vllm-tt.sh\" || (echo 'ERROR: installer missing from plugin checkout' && exit 1)
+              test -f \"\$HOME/vllm-tt-plugin/docs/vllm-overrides.txt\" || (echo 'ERROR: vllm-overrides.txt missing (numpy<2 pin)' && exit 1)
+              echo '--- vllm-tt-plugin HEAD ---'
+              git -C \"\$HOME/vllm-tt-plugin\" log -1 --format='%H  %s'
+              echo 'vllm-tt-plugin checkout OK'
             "
 
       - name: "Smoke test 6c — TT-Forge (pjrt_plugin_tt + jax) imports"

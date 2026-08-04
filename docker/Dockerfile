@@ -80,7 +80,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # - Include extra libs required by tt-metal, tt-mlir, tt-forge-onnx, tt-xla, vLLM
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # Core utilities
-    bash ca-certificates curl wget git sudo apt-transport-https gnupg lsb-release \
+    bash ca-certificates curl wget git sudo apt-transport-https gnupg lsb-release jq \
     # Build tools
     build-essential ninja-build cmake pkg-config \
     # Python 3.10 + venv (from deadsnakes PPA): needed for venv-metal and venv-vllm.
