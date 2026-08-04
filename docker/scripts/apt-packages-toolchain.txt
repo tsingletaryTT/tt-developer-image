@@ -1,0 +1,23 @@
+# apt-packages-toolchain.txt
+#
+# Additional packages for the variants that compile tt-metal from source, or that
+# ship the full developer toolchain: docker/Dockerfile and docker/Dockerfile.qb2.
+#
+# docker/Dockerfile.latest-metal deliberately does NOT install these. It takes the
+# compiled runtime from the published `ttnn` wheel and never builds tt-metal, so the
+# compiler and protobuf/boost stack would be dead weight there. (It is in fact the
+# smallest of the three variants at ~18.5 GB, vs 23.5 GB standard and 22.7 GB qb2 —
+# the omission is about relevance, not size.)
+#
+# Installed alongside apt-packages-base.txt, same consumption pattern:
+#   grep -vE '^\s*(#|$)' <file> | xargs apt-get install -y --no-install-recommends
+
+# Compilers used by the tt-metal / tt-mlir build
+clang-17 clang++-17
+
+# Common libs for tt-mlir / tt-forge / tt-xla
+protobuf-compiler libprotobuf-dev
+libboost-all-dev libnsl-dev
+
+# For performance / CPU governor commands (parity with the docs)
+cpufrequtils linux-tools-common linux-tools-generic

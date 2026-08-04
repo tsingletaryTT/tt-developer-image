@@ -229,3 +229,109 @@ jobs:
       - name: Clean up local image
         if: always()
         run: docker rmi ${{ steps.build.outputs.imageid }} || true
+
+  # ==================================================================
+  # Guard against the three image variants drifting apart.
+  #
+  # This exists because of a real failure: `jq` was added to
+  # Dockerfile.qb2 in 03cb664 but not to the standard Dockerfile, which
+  # then sat broken for three weeks — tt-installer defaults to its
+  # `release` channel, which parses the golden .ttis manifest with jq.
+  # Only the standard Dockerfile was ever built in CI, so nothing caught
+  # it until a push happened to touch docker/**.
+  #
+  # Two defences, cheap enough to run on every push:
+  #   1. the shared package lists are the single source of truth, so no
+  #      variant can quietly gain or lose a package
+  #   2. Dockerfile.qb2 is actually built, not just linted
+  # ==================================================================
+  variants:
+    name: Variant drift guard (lint all, build qb2)
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # The heuristic version of this check produced false positives on the PPA
+      # bootstrap and on `apt-get install -f`, so it lives in a script with
+      # negative tests rather than a grep chain in YAML.
+      - name: Variants share their apt package lists
+        run: python3 docker/scripts/check_apt_lists.py docker
+
+      # `docker build --check` exits non-zero for WARNINGS as well as errors, so we
+      # cannot use its exit code directly: docker/Dockerfile carries a known
+      # SecretsUsedInArgOrEnv warning (ENV PASSWORD for code-server, present since
+      # the initial commit and overridden at runtime). Print everything, but fail
+      # only on genuine ERROR lines, so a new structural mistake still breaks CI
+      # while the accepted warning does not.
+      - name: Lint every Dockerfile (errors fail, warnings reported)
+        run: |
+          set -uo pipefail
+          fail=0
+          for df in docker/Dockerfile docker/Dockerfile.qb2 docker/Dockerfile.latest-metal; do
+            echo "--- $df"
+            out=$(docker build --check -f "$df" docker/ 2>&1) || true
+            echo "$out"
+            if grep -qE '^ERROR: ' <<<"$out"; then
+              echo "::error file=$df::lint reported an ERROR (not just a warning)"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      # Measured locally: standard 23.5 GB, qb2 22.7 GB, latest-metal 18.5 GB.
+      # The `build` job already builds the standard image on ubuntu-latest, so
+      # image size alone is not the constraint. What we avoid is holding two of
+      # them at once, hence the explicit rmi between builds.
+      - name: Build Dockerfile.qb2 (checkout mode)
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/
+          file: docker/Dockerfile.qb2
+          build-args: |
+            TT_METAL_BUILD=checkout
+          load: true
+          push: false
+          tags: tt-dev-qb2:ci
+          cache-from: type=gha,scope=qb2
+          cache-to: type=gha,mode=max,scope=qb2
+
+      - name: Smoke test the qb2 image
+        run: bash docker/scripts/qb2_smoke.sh tt-dev-qb2:ci
+
+      - name: Free the qb2 image before the next build
+        run: docker rmi tt-dev-qb2:ci || true
+
+      # latest-metal is only built on demand. It is the smallest of the three, but
+      # it is the only variant that actually installs vLLM — `uv pip install
+      # --no-binary vllm` builds vllm==0.24.0 from its sdist, which took ~4.5 min
+      # on a 32-core workstation and is untested on a 2-core hosted runner. Rather
+      # than put an unmeasured long step on every push, it runs via
+      # workflow_dispatch. Its Dockerfile is still linted on every push above, and
+      # the shared package lists cover the drift class that broke us.
+      - name: Build Dockerfile.latest-metal (on demand only)
+        if: github.event_name == 'workflow_dispatch'
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/
+          file: docker/Dockerfile.latest-metal
+          load: true
+          push: false
+          tags: tt-dev-latest-metal:ci
+          cache-from: type=gha,scope=latest-metal
+          cache-to: type=gha,mode=max,scope=latest-metal
+
+      - name: Smoke test the latest-metal image
+        if: github.event_name == 'workflow_dispatch'
+        run: bash docker/scripts/qb2_smoke.sh tt-dev-latest-metal:ci
+
+      - name: Clean up local images
+        if: always()
+        run: docker rmi tt-dev-qb2:ci tt-dev-latest-metal:ci || true

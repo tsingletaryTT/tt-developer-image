@@ -50,19 +50,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && add-apt-repository -y ppa:deadsnakes/ppa \
  && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl wget git sudo apt-transport-https gnupg lsb-release jq \
-    build-essential ninja-build cmake pkg-config \
-    python3.10 python3.10-venv python3.10-dev \
-    python3.12-venv python3.12-dev \
-    python3-pip \
-    clang-17 clang++-17 \
-    protobuf-compiler libprotobuf-dev \
-    libnuma-dev libhwloc-dev libboost-all-dev libnsl-dev \
-    libncurses6 \
-    cpufrequtils linux-tools-common linux-tools-generic \
-    iproute2 iputils-ping \
- && rm -rf /var/lib/apt/lists/*
+# Package lists live in scripts/ so they cannot drift between the three image
+# variants. Base is shared by all three; the toolchain list is only for variants
+# that build tt-metal from source. Comments and blank lines are stripped.
+COPY scripts/apt-packages-base.txt /tmp/apt-base.txt
+COPY scripts/apt-packages-toolchain.txt /tmp/apt-toolchain.txt
+RUN apt-get update && \
+    grep -vE '^[[:space:]]*(#|$)' /tmp/apt-base.txt \
+      | xargs apt-get install -y --no-install-recommends && \
+    grep -vE '^[[:space:]]*(#|$)' /tmp/apt-toolchain.txt \
+      | xargs apt-get install -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/* /tmp/apt-*.txt
 
 RUN ln -sf /usr/bin/clang-17 /usr/local/bin/clang && \
     ln -sf /usr/bin/clang++-17 /usr/local/bin/clang++

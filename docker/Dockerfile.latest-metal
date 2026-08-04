@@ -50,8 +50,9 @@
 #
 # Known caveat, not yet addressed: the plugin's installer does not force a CPU torch
 # build, so this venv resolves a CUDA wheel (torch 2.11.0+cu130 as built). It imports
-# and runs fine — TT execution never goes through torch's CUDA path — but it is the
-# single largest contributor to the ~18.5 GB image. Constraining it means overriding
+# and runs fine — TT execution never goes through torch's CUDA path — but it is a large
+# contributor to the ~18.5 GB image (still the smallest of the three variants:
+# standard 23.5 GB, qb2 22.7 GB). Constraining it means overriding
 # torch inside upstream's installer, which risks diverging from the combination
 # upstream tests, so it is left alone deliberately rather than papered over.
 
@@ -79,15 +80,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # build-essential/cmake/ninja are needed even though nothing of tt-metal is
 # compiled here: the plugin's installer runs `uv pip install --no-binary vllm`,
 # which builds vLLM from its sdist.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl wget git sudo apt-transport-https gnupg lsb-release jq \
-    build-essential ninja-build cmake pkg-config \
-    python3.10 python3.10-venv python3.10-dev \
-    python3.12-venv python3.12-dev \
-    python3-pip \
-    libnuma-dev libhwloc-dev libncurses6 \
-    iproute2 iputils-ping \
- && rm -rf /var/lib/apt/lists/*
+# Package lists live in scripts/ so they cannot drift between the three image
+# variants. Base is shared by all three; the toolchain list is only for variants
+# that build tt-metal from source. Comments and blank lines are stripped.
+COPY scripts/apt-packages-base.txt /tmp/apt-base.txt
+RUN apt-get update && \
+    grep -vE '^[[:space:]]*(#|$)' /tmp/apt-base.txt \
+      | xargs apt-get install -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/* /tmp/apt-*.txt
 
 # ---------------------------------------------------------------------------
 # 2. Create ttuser (mirrors the QB2 default account)

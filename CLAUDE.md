@@ -653,3 +653,66 @@ build-args interpolated, so layer 8 *displayed* `git clone --branch "latest"`. `
 not do ARG substitution — the shell does — and the layer's real stdout said
 `Cloning tt-metal at v0.75.0`, with `remote.origin.fetch = +refs/tags/v0.75.0`. Don't
 "fix" that again.
+
+### 2026-08-04 — CI failure, then refactor for commonalities
+Prompt: "the CI for tt-developer-image failed; please debug" → "Refactor for
+commonalities?" → "D+list".
+
+**The failure was not the vLLM change.** Build died at the tt-installer step with
+`[ttis] ERROR: jq is required but not installed`. tt-installer's `--versions` flag
+defaults to `release`, which fetches the golden `.ttis` manifest from tt-sw-manifest and
+parses it with `jq`. The standard `docker/Dockerfile` passes no `--versions` and had no
+`jq` in its apt list. `Dockerfile.qb2` was fixed for exactly this in `03cb664`
+(2026-07-15) — but that fix touched qb2 only. So the standard file had been latently
+broken ever since tt-installer's latest release began defaulting to `release`; it
+surfaced now only because `docker-build.yml` is path-filtered on `docker/**` and this was
+the first push to touch it. Any push touching `docker/` would have failed identically.
+
+CI logs need admin auth and `gh` is unauthenticated here, so I reproduced the exact CI
+invocation locally (`docker build --build-arg TT_METAL_BUILD=checkout -f docker/Dockerfile
+docker/`) and got the real error in one run. Worth remembering: I would not have guessed
+"upstream changed its default version channel" — reproducing beat hypothesising.
+
+Second, separate defect (mine): smoke test 6b asserted `$HOME/tt-vllm`, which the plugin
+migration replaced with `$HOME/vllm-tt-plugin`. Retargeted, and it now also asserts the
+checkout carries `docs/install-vllm-tt.sh` and `docs/vllm-overrides.txt` — the latter
+holds the numpy<2 pin, and its absence is the difference between a working install and one
+that silently cannot import ttnn. Fix + retarget shipped in `4a58b71`; CI green.
+
+**Then the refactor.** Measured the real overlap first: raw line overlap is modest (60 of
+~190 between the two biggest) because the standard Dockerfile carries a lot that is
+genuinely unique. But the apt package sets are **nested** — `latest-metal ⊂ qb2 = standard`
+— which is the ideal shape. So rather than a shared base image (option A), we took the
+cheaper option:
+
+- `docker/scripts/apt-packages-base.txt` — 25 packages, all three variants
+- `docker/scripts/apt-packages-toolchain.txt` — 9 more, for the two that compile tt-metal
+- each Dockerfile `COPY`s the list(s) and installs via
+  `grep -vE '^\s*(#|$)' … | xargs apt-get install`
+- verified the refactor is behaviour-preserving: resolved package sets are **identical**
+  to the pre-refactor blocks for all three variants
+- `docker/scripts/check_apt_lists.py` — CI guard, with three negative tests confirming it
+  catches the original jq bug, a re-inlined package list, and a variant that stops using
+  the shared list
+- new `variants` CI job: runs the guard, lints all three, and **builds Dockerfile.qb2**
+  with its smoke script
+
+Why the guard is a script and not a grep chain in YAML: the first heuristic version had two
+false positives — the PPA bootstrap (`software-properties-common` sits on a continuation
+line, not the `apt-get install` line) and `apt-get install -f` (dpkg dependency repair,
+names no packages). Both are legitimate and are now explicit exceptions.
+
+**`Dockerfile.latest-metal` is deliberately not built in CI.** It installs the ttnn wheel
+plus a CUDA torch and lands at ~18.5 GB, which exceeds the free disk on a GitHub-hosted
+runner. It is covered by the lint and by the shared lists; build it locally or on a
+self-hosted runner.
+
+Gotcha worth remembering: **`docker build --check` exits non-zero for WARNINGS too**, not
+just errors. I measured it as exit 0 twice and was wrong both times — both measurements were
+`docker build --check ... | tail` / `| grep`, so `$?` was the *pipeline tail's* status, not
+docker's. Measured without a pipe it is consistently 1 whenever a warning exists. That would
+have failed the new lint step on `docker/Dockerfile`'s known `SecretsUsedInArgOrEnv` warning
+(`ENV PASSWORD=` for code-server, present since the initial commit, overridden at runtime and
+deliberately left alone). The step therefore captures the output, prints it, and fails only on
+`^ERROR: ` lines — verified both ways: the current warning-only tree passes, and a Dockerfile
+with an unresolvable `COPY --from` is caught.

@@ -1,0 +1,43 @@
+# apt-packages-base.txt
+#
+# Packages every image variant needs. Shared by docker/Dockerfile,
+# docker/Dockerfile.qb2 and docker/Dockerfile.latest-metal so the list cannot
+# drift between them — which it did: `jq` was added to Dockerfile.qb2 in
+# 03cb664 and the standard Dockerfile went three weeks without it, failing CI
+# the moment anything touched docker/**.
+#
+# Consumed with:
+#   grep -vE '^\s*(#|$)' <file> | xargs apt-get install -y --no-install-recommends
+#
+# The deadsnakes PPA must already be added before this runs — python3.10 comes
+# from there on Ubuntu 24.04.
+#
+# Blank lines and # comments are stripped. One concern per line.
+
+# Core utilities.
+# jq is load-bearing: tt-installer defaults to its `release` version channel,
+# which parses the golden .ttis manifest from tt-sw-manifest with jq. Without it
+# the install dies with "[ttis] ERROR: jq is required but not installed".
+bash ca-certificates curl wget git sudo apt-transport-https gnupg lsb-release jq
+
+# Build tools. Needed even in checkout mode: the vLLM plugin's installer runs
+# `uv pip install --no-binary vllm`, which builds vLLM from its sdist.
+build-essential ninja-build cmake pkg-config
+
+# Python 3.10 + venv (from the deadsnakes PPA): venv-metal and venv-vllm.
+# We avoid 3.12 for the tt-metal/vLLM stack to stay in known-good territory.
+python3.10 python3.10-venv python3.10-dev
+
+# Python 3.12 venv/dev support (Ubuntu 24.04 native — no deadsnakes needed).
+# Used for venv-forge: tt-forge-onnx wheels ship cp312-only.
+python3.12-venv python3.12-dev
+python3-pip
+
+# Runtime libs.
+# libncurses6 is required by tt-forge native libraries (_C.so) at runtime.
+# Ubuntu 24.04 ships it only as a transitive dep, so install it explicitly to
+# survive apt pruning.
+libnuma-dev libhwloc-dev libncurses6
+
+# Networking / misc
+iproute2 iputils-ping

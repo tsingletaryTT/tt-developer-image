@@ -78,32 +78,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # - Install fundamental build tools, Python 3.10 (deadsnakes), Python 3.12
 #   (Ubuntu 24.04 default), Clang, CMake, etc.
 # - Include extra libs required by tt-metal, tt-mlir, tt-forge-onnx, tt-xla, vLLM
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Core utilities
-    bash ca-certificates curl wget git sudo apt-transport-https gnupg lsb-release jq \
-    # Build tools
-    build-essential ninja-build cmake pkg-config \
-    # Python 3.10 + venv (from deadsnakes PPA): needed for venv-metal and venv-vllm.
-    # We avoid 3.12 for the tt-metal/vLLM stack to stay in known-good territory.
-    python3.10 python3.10-venv python3.10-dev \
-    # Python 3.12 venv/dev support (Ubuntu 24.04 native — no deadsnakes needed).
-    # Used for venv-forge: tt-forge-onnx wheels ship cp312-only.
-    python3.12-venv python3.12-dev \
-    python3-pip \
-    # Compilers
-    clang-17 clang++-17 \
-    # Common libs for tt-mlir / tt-forge / tt-xla
-    protobuf-compiler libprotobuf-dev \
-    libnuma-dev libhwloc-dev libboost-all-dev libnsl-dev \
-    # libncurses6: required by tt-forge native libraries (_C.so) at runtime.
-    # Ubuntu 24.04 ships libncurses6 but only as a transitive dep; explicit
-    # installation ensures it is always present regardless of apt pruning.
-    libncurses6 \
-    # For performance / CPU governor commands (parity with docs)
-    cpufrequtils linux-tools-common linux-tools-generic \
-    # Networking / misc
-    iproute2 iputils-ping \
- && rm -rf /var/lib/apt/lists/*
+# Package lists live in scripts/ so they cannot drift between the three image
+# variants. Base is shared by all three; the toolchain list is only for variants
+# that build tt-metal from source. Comments and blank lines are stripped.
+COPY scripts/apt-packages-base.txt /tmp/apt-base.txt
+COPY scripts/apt-packages-toolchain.txt /tmp/apt-toolchain.txt
+RUN apt-get update && \
+    grep -vE '^[[:space:]]*(#|$)' /tmp/apt-base.txt \
+      | xargs apt-get install -y --no-install-recommends && \
+    grep -vE '^[[:space:]]*(#|$)' /tmp/apt-toolchain.txt \
+      | xargs apt-get install -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/* /tmp/apt-*.txt
 
 # Symlink clang-17 as default clang/clang++ for build scripts that use 'clang'
 RUN ln -sf /usr/bin/clang-17 /usr/local/bin/clang && \

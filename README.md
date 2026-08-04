@@ -332,6 +332,33 @@ docker run --rm <image> cat /home/ttuser/.metal-release.env
 installed wheel, and that `ttnn` resolves from site-packages while `models/` resolves
 from the source tree. On the pinned images that check is skipped.
 
+### Shared apt package lists
+
+The three variants install system packages from two shared files rather than each
+carrying its own copy:
+
+| File | Used by |
+|---|---|
+| `docker/scripts/apt-packages-base.txt` | all three |
+| `docker/scripts/apt-packages-toolchain.txt` | `Dockerfile`, `Dockerfile.qb2` (they compile tt-metal) |
+
+`Dockerfile.latest-metal` takes base only — it never builds tt-metal, so the
+compiler and protobuf/boost stack would be dead weight there.
+
+Measured sizes, for reference: standard 23.5 GB, qb2 22.7 GB, latest-metal 18.5 GB.
+CI builds the standard and qb2 variants on every push and latest-metal on demand
+(`workflow_dispatch`) — the latter is the only one that installs vLLM, and building
+`vllm==0.24.0` from its sdist is slow on a 2-core hosted runner.
+
+This exists because of a real failure. `jq` was added to `Dockerfile.qb2` and not to
+the standard `Dockerfile`, which then sat broken for three weeks: tt-installer defaults
+to its `release` version channel, which parses the golden `.ttis` manifest with `jq`,
+and the standard Dockerfile was the only variant CI built. Sharing the lists makes that
+class of drift structurally impossible, and `check_apt_lists.py` (run in CI) fails if a
+variant stops using them or starts inlining packages again.
+
+Add packages to the list files, not to a Dockerfile.
+
 ### A note on tt-installer's golden versions
 
 tt-installer pins a golden version set (`tt-sw-manifest`), and that manifest does
@@ -440,6 +467,9 @@ What exists inside a running container and why each directory is where it is:
 /tmp/                               ← Build helper scripts (always present)
 ├── build_tt_metal.sh               ← Compiles tt-metal from ~/tt-metal source
 │                                      Run manually in checkout mode to compile.
+├── apt-packages-base.txt           ← System packages every variant installs (shared, so they cannot drift)
+├── apt-packages-toolchain.txt      ← Extra packages for variants that compile tt-metal (Dockerfile, Dockerfile.qb2)
+├── check_apt_lists.py              ← CI guard: every variant sources the shared lists, nothing inlines packages
 ├── setup_envs.sh                   ← Sets up venv-vllm or venv-forge
 │                                      Usage: bash /tmp/setup_envs.sh vllm
 └── forge-requirements.txt          ← URL-dep manifest for venv-forge install
